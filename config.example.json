@@ -1,0 +1,9 @@
+{
+  "provider": "openai",
+  "openai_api_key": "sk-...",
+  "openai_model": "gpt-4o-mini",
+  "anthropic_api_key": "",
+  "anthropic_model": "claude-haiku-4-5-20251001",
+  "tts_provider": "fptai",
+  "fptai_api_key": "YOUR_FPTAI_KEY"
+}

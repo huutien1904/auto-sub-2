@@ -1,0 +1,6 @@
+openai-whisper
+deep-translator
+customtkinter
+Pillow
+torch
+tqdm
