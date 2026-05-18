@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import customtkinter, PIL, whisper, deep_translator; print\\('All packages OK'\\)\" 2>&1)",
+      "PowerShell(Start-Process -FilePath \"c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe\" -ArgumentList \"c:\\\\work\\\\auto-sub-2\\\\main.py\" -WorkingDirectory \"c:\\\\work\\\\auto-sub-2\")",
+      "PowerShell(python --version 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install gspread google-auth 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import gspread; from google.oauth2.service_account import Credentials; print\\('gspread OK, version:', gspread.__version__\\)\")",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install yt-dlp 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import yt_dlp; print\\('yt-dlp OK, version:', yt_dlp.version.__version__\\)\")",
+      "PowerShell(if \\(Test-Path \"c:\\\\work\\\\auto-sub-2\\\\cookies.txt\"\\) { $size = \\(Get-Item \"c:\\\\work\\\\auto-sub-2\\\\cookies.txt\"\\).Length; Write-Output \"cookies.txt tồn tại, size: $size bytes\" } else { Write-Output \"cookies.txt KHÔNG tồn tại\" })",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install playwright 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m playwright install chromium 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"from playwright.sync_api import sync_playwright; print\\('Playwright OK'\\)\")",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install openai anthropic edge-tts gtts pydub opencv-python 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import openai, anthropic, edge_tts, gtts, pydub, cv2; print\\('T?t c? OK'\\)\")",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install pyaudioop 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install audioop-lts 2>&1)",
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import openai, anthropic, edge_tts, gtts, pydub, cv2; print\\('OK'\\)\")"
+    ]
+  }
+}

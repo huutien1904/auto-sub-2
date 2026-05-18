@@ -112,6 +112,33 @@ def _add_browser_cookies(ydl_opts: dict) -> bool:
     return False
 
 
+def _detect_browser() -> Optional[str]:
+    """Tìm browser đang cài. Ưu tiên Edge vì ít bị khóa hơn Chrome."""
+    import shutil
+    # Edge trước vì Chrome thường bị khóa DB khi đang chạy
+    BROWSERS = [
+        ("edge",    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        ("edge",    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        ("firefox", r"C:\Program Files\Mozilla Firefox\firefox.exe"),
+        ("brave",   r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ("chrome",  r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        ("chrome",  r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    ]
+    for name, path in BROWSERS:
+        if os.path.exists(path):
+            return name
+    for name in ("edge", "firefox", "chrome", "chromium"):
+        if shutil.which(name):
+            return name
+    return None
+
+
+def _strip_ansi(text: str) -> str:
+    """Xóa ANSI color codes khỏi chuỗi lỗi."""
+    import re
+    return re.sub(r'\x1b\[[0-9;]*m|\[0;[0-9]+m|\[0m', '', text)
+
+
 def _playwright_download(
     url: str,
     output_dir: str,
@@ -240,7 +267,7 @@ def _playwright_download(
     return os.path.abspath(out_path)
 
 
-# Platforms to use Playwright downloader instead of yt-dlp
+# Platforms dùng Playwright (Douyin, Kuaishou, RedNote có anti-bot mạnh)
 _PLAYWRIGHT_PLATFORMS = [
     "douyin.com", "iesdouyin.com", "v.douyin.com",
     "kuaishou.com", "gifshow.com",
@@ -255,14 +282,17 @@ def download_video(
 ) -> str:
     """
     Download best-quality video to output_dir.
+    Douyin/Kuaishou/RedNote → Playwright. Còn lại → yt-dlp.
     Returns absolute path of the downloaded MP4.
     """
     try:
         import yt_dlp
     except ImportError:
-        raise RuntimeError(
-            "Chưa cài yt-dlp.\nChạy lệnh:  pip install yt-dlp"
-        )
+        raise RuntimeError("Chưa cài yt-dlp.\nChạy lệnh:  pip install yt-dlp")
+
+    # Dùng Playwright cho các platform có anti-bot mạnh
+    if any(d in url.lower() for d in _PLAYWRIGHT_PLATFORMS):
+        return _playwright_download(url, output_dir, progress_callback)
 
     os.makedirs(output_dir, exist_ok=True)
     result_path: list[str] = []
@@ -274,30 +304,22 @@ def download_video(
             done    = d.get("downloaded_bytes", 0)
             speed   = d.get("speed") or 0
             spd_str = f"  {speed / 1_048_576:.1f} MB/s" if speed else ""
-
             if total > 0:
-                pct = done / total
+                pct     = done / total
                 done_mb  = done  / 1_048_576
                 total_mb = total / 1_048_576
                 msg = f"Đang tải{spd_str}  ({done_mb:.1f} / {total_mb:.1f} MB)"
             else:
                 msg = f"Đang tải{spd_str}  ({done / 1_048_576:.1f} MB)"
                 pct = 0.35
-
             if progress_callback:
                 progress_callback(msg, pct * 0.88)
-
         elif status == "finished":
             result_path.append(d.get("filename", ""))
             if progress_callback:
                 progress_callback("Đang ghép / chuyển đổi...", 0.92)
 
-    # Use Playwright for platforms with broken yt-dlp extractors
-    use_playwright = any(d in url.lower() for d in _PLAYWRIGHT_PLATFORMS)
-    if use_playwright:
-        return _playwright_download(url, output_dir, progress_callback)
-
-    ydl_opts = {
+    base_opts = {
         "outtmpl":             os.path.join(output_dir, "%(title).80s.%(ext)s"),
         "format":              "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
@@ -306,39 +328,60 @@ def download_video(
         "quiet":               True,
         "no_warnings":         True,
         "retries":             5,
-        "extractor_args":      {"douyin": {"embed_metadata": False}},
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+        },
     }
 
-    # Use saved cookies.txt if available (most reliable method)
     cookies_file = _find_saved_cookies()
+
+    # Thứ tự thử: browser trực tiếp → cookies.txt → không có cookies
+    attempts = []
+    browser_found = _detect_browser()
+    if browser_found:
+        opts_browser = dict(base_opts)
+        opts_browser["cookiesfrombrowser"] = (browser_found, None, None, None)
+        attempts.append(("browser", opts_browser))
     if cookies_file:
-        ydl_opts["cookiefile"] = cookies_file
+        opts_file = dict(base_opts)
+        opts_file["cookiefile"] = cookies_file
+        attempts.append(("file", opts_file))
+    attempts.append(("none", base_opts))
+
+    last_err = None
+    for attempt_type, ydl_opts in attempts:
         if progress_callback:
-            progress_callback("Đang dùng cookies đã lưu...", 0.01)
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            labels = {"browser": "Đang dùng cookies từ browser...",
+                      "file":    "Đang dùng cookies.txt...",
+                      "none":    "Đang thử không cần cookies..."}
+            progress_callback(labels[attempt_type], 0.01)
         try:
-            info     = ydl.extract_info(url, download=True)
-            prepared = ydl.prepare_filename(info)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info     = ydl.extract_info(url, download=True)
+                prepared = ydl.prepare_filename(info)
+            break  # thành công
         except Exception as e:
-            err_str = str(e)
-            # Give helpful error for platforms that need cookies
-            if "cookies" in err_str.lower() or "login" in err_str.lower():
-                raise RuntimeError(
-                    "Video này cần cookies để tải.\n\n"
-                    "Cách lấy cookies:\n"
-                    "1. Cài extension 'Get cookies.txt LOCALLY' trên Chrome\n"
-                    "2. Vào douyin.com (không cần đăng nhập)\n"
-                    "3. Nhấn extension → Export → lưu file cookies.txt\n"
-                    "4. Trong app nhấn '🍪 Import Cookies' và chọn file đó\n\n"
-                    f"Lỗi gốc: {err_str[:100]}"
-                ) from e
-            raise
+            last_err = e
+            err_str  = _strip_ansi(str(e)).lower()
+            if any(k in err_str for k in ("cookies", "login", "sign in", "fresh", "could not copy", "database")):
+                continue  # thử cách tiếp theo
+            raise RuntimeError(f"Lỗi tải video: {_strip_ansi(str(e))[:300]}") from e
+    else:
+        raise RuntimeError(
+            "Không tải được video — Douyin yêu cầu cookies hợp lệ.\n\n"
+            "Cách nhanh nhất:\n"
+            "1. Mở Edge → vào www.douyin.com → chờ load xong\n"
+            "2. Đóng Edge hoàn toàn\n"
+            "3. Thử tải lại (app sẽ đọc cookies từ Edge)\n\n"
+            "Hoặc dùng link TikTok/YouTube thay thế.\n\n"
+            f"Lỗi: {_strip_ansi(str(last_err))[:200]}"
+        )
 
-    # Prefer what the hook reported; fall back to prepared name
     final = result_path[0] if result_path else prepared
-
-    # yt-dlp might write .webm even with merge_output_format=mp4 on some builds
     if not os.path.exists(final):
         mp4_alt = os.path.splitext(final)[0] + ".mp4"
         if os.path.exists(mp4_alt):

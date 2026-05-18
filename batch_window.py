@@ -1,4 +1,4 @@
-"""Batch processing window — Google Sheets integration."""
+"""Batch processing window — Google Sheets via Service Account JSON."""
 
 import os
 import threading
@@ -12,6 +12,7 @@ from batch_processor import (
     BatchProcessor, ST_NEW, ST_SUCCESS, ST_ERROR,
     test_connection, SheetClient, get_pending_rows,
 )
+import tkinter.messagebox as _mb
 
 
 STATUS_COLORS = {
@@ -35,6 +36,7 @@ class BatchWindow(ctk.CTkToplevel):
         self._processor: Optional[BatchProcessor] = None
         self._running      = False
         self._row_map: dict[int, str] = {}   # row_num → tree item id
+        self._json_path    = ""
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -58,41 +60,65 @@ class BatchWindow(ctk.CTkToplevel):
         cfg.grid(row=1, column=0, padx=14, pady=4, sticky="ew")
         cfg.grid_columnconfigure(1, weight=1)
 
-        # Apps Script URL
-        ctk.CTkLabel(cfg, text="⚡  Apps Script URL:", font=ctk.CTkFont(weight="bold"),
+        # Service Account JSON
+        ctk.CTkLabel(cfg, text="🔑  Service Account JSON:", font=ctk.CTkFont(weight="bold"),
                      width=200, anchor="w").grid(row=0, column=0, padx=(14,6), pady=6, sticky="w")
-        self._sheet_url = tk.StringVar()
-        ctk.CTkEntry(cfg, textvariable=self._sheet_url, height=32,
-                     placeholder_text="https://script.google.com/macros/s/.../exec"
-                     ).grid(row=0, column=1, columnspan=2, padx=(4,14), pady=6, sticky="ew")
+        self._json_lbl = ctk.CTkLabel(cfg, text="  Chưa chọn file...",
+                                       anchor="w", fg_color=("gray82","gray22"),
+                                       corner_radius=6, height=32)
+        self._json_lbl.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
+        ctk.CTkButton(cfg, text="📂", width=36, height=32,
+                      command=self._browse_json
+                      ).grid(row=0, column=2, padx=(4,14), pady=6)
 
         # Help button
         ctk.CTkButton(
-            cfg, text="❓  Cách lấy URL", width=130, height=26,
+            cfg, text="❓  Cách tạo JSON", width=130, height=26,
             fg_color="transparent", hover_color=("gray80","gray25"),
             text_color=("#1565C0","#64B5F6"), border_width=1,
             border_color=("gray70","gray40"),
             command=self._show_help,
         ).grid(row=1, column=0, padx=14, pady=(0,6), sticky="w")
 
-        # Output dir
-        ctk.CTkLabel(cfg, text="📁  Thư mục xuất:", font=ctk.CTkFont(weight="bold"),
+        # Google Sheet URL
+        ctk.CTkLabel(cfg, text="📋  Google Sheet URL:", font=ctk.CTkFont(weight="bold"),
                      width=200, anchor="w").grid(row=2, column=0, padx=(14,6), pady=6, sticky="w")
+        self._sheet_url = tk.StringVar()
+        ctk.CTkEntry(cfg, textvariable=self._sheet_url, height=32,
+                     placeholder_text="https://docs.google.com/spreadsheets/d/..."
+                     ).grid(row=2, column=1, columnspan=2, padx=(4,14), pady=6, sticky="ew")
+
+        # Download dir
+        ctk.CTkLabel(cfg, text="📥  Thư mục tải video:", font=ctk.CTkFont(weight="bold"),
+                     width=200, anchor="w").grid(row=3, column=0, padx=(14,6), pady=6, sticky="w")
+        self._dl_dir = tk.StringVar()
+        ctk.CTkEntry(cfg, textvariable=self._dl_dir, height=32,
+                     placeholder_text="Thư mục lưu video gốc tải về..."
+                     ).grid(row=3, column=1, padx=4, pady=6, sticky="ew")
+        ctk.CTkButton(cfg, text="📂", width=36, height=32,
+                      command=self._browse_dl_dir
+                      ).grid(row=3, column=2, padx=(4,14), pady=6)
+
+        # Output dir
+        ctk.CTkLabel(cfg, text="✅  Thư mục video hoàn thành:", font=ctk.CTkFont(weight="bold"),
+                     width=200, anchor="w").grid(row=4, column=0, padx=(14,6), pady=6, sticky="w")
         self._out_dir = tk.StringVar()
         ctk.CTkEntry(cfg, textvariable=self._out_dir, height=32,
-                     placeholder_text="Thư mục lưu video đã xử lý..."
-                     ).grid(row=2, column=1, padx=4, pady=6, sticky="ew")
+                     placeholder_text="Thư mục lưu video đã dịch xong..."
+                     ).grid(row=4, column=1, padx=4, pady=6, sticky="ew")
         ctk.CTkButton(cfg, text="📂", width=36, height=32,
-                      command=self._browse_dir
-                      ).grid(row=2, column=2, padx=(4,14), pady=6)
+                      command=self._browse_out_dir
+                      ).grid(row=4, column=2, padx=(4,14), pady=6)
 
         # Action buttons
         act = ctk.CTkFrame(cfg, fg_color="transparent")
-        act.grid(row=3, column=0, columnspan=3, padx=14, pady=(4, 12), sticky="w")
+        act.grid(row=5, column=0, columnspan=3, padx=14, pady=(4, 12), sticky="w")
 
-        ctk.CTkButton(act, text="🔗  Kết nối & Xem trước", height=36,
-                      fg_color=("#1565C0","#0D47A1"), hover_color=("#0D47A1","#082a60"),
-                      command=self._connect_preview).pack(side="left", padx=(0, 8))
+        self._connect_btn = ctk.CTkButton(
+            act, text="🔗  Kết nối & Xem trước", height=36,
+            fg_color=("#1565C0","#0D47A1"), hover_color=("#0D47A1","#082a60"),
+            command=self._connect_preview)
+        self._connect_btn.pack(side="left", padx=(0, 8))
 
         self._start_btn = ctk.CTkButton(
             act, text="▶  Bắt đầu xử lý", height=36,
@@ -170,40 +196,63 @@ class BatchWindow(ctk.CTkToplevel):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
+    def _browse_json(self):
+        path = filedialog.askopenfilename(
+            title="Chọn file Service Account JSON",
+            filetypes=[("JSON", "*.json"), ("Tất cả", "*.*")],
+        )
+        if path:
+            self._json_path = path
+            self._json_lbl.configure(text=f"  {os.path.basename(path)}")
+
     def _show_help(self):
-        from tkinter import messagebox
-        messagebox.showinfo(
-            "Cách lấy Apps Script URL",
-            "1. Mở Google Sheet của bạn\n\n"
-            "2. Nhấn menu Extensions → Apps Script\n\n"
-            "3. Xóa code cũ, dán đoạn code này vào:\n"
-            "   (Copy từ phần đầu file batch_processor.py)\n\n"
-            "4. Nhấn 💾 Save → Deploy → New deployment\n\n"
-            "5. Chọn:\n"
-            "   • Type: Web app\n"
-            "   • Execute as: Me\n"
-            "   • Who has access: Anyone\n\n"
-            "6. Nhấn Deploy → Copy URL dán vào đây\n\n"
-            "✅ Xong! Không cần file JSON, không cần Google Cloud.",
+        _mb.showinfo(
+            "Cách tạo Service Account JSON",
+            "1. Vào https://console.cloud.google.com\n\n"
+            "2. Tạo project mới (hoặc chọn project có sẵn)\n\n"
+            "3. APIs & Services → Enable APIs\n"
+            "   → Tìm 'Google Sheets API' → Enable\n\n"
+            "4. IAM & Admin → Service Accounts\n"
+            "   → Create Service Account → đặt tên → Done\n\n"
+            "5. Click vào service account vừa tạo\n"
+            "   → Tab 'Keys' → Add Key → JSON → Download\n\n"
+            "6. Mở Google Sheet của bạn\n"
+            "   → Share → thêm email của service account\n"
+            "   (email dạng: xxx@project.iam.gserviceaccount.com)\n"
+            "   → chọn quyền Editor\n\n"
+            "7. Dán URL sheet và chọn file JSON vào ứng dụng\n\n"
+            "✅ Xong!",
             parent=self,
         )
 
-    def _browse_dir(self):
-        p = filedialog.askdirectory(title="Chọn thư mục xuất video")
+    def _browse_dl_dir(self):
+        p = filedialog.askdirectory(title="Chọn thư mục lưu video tải về")
+        if p:
+            self._dl_dir.set(p)
+
+    def _browse_out_dir(self):
+        p = filedialog.askdirectory(title="Chọn thư mục lưu video hoàn thành")
         if p:
             self._out_dir.set(p)
 
     def _connect_preview(self):
+        if not self._json_path:
+            _mb.showwarning("Thiếu file JSON", "Vui lòng chọn file Service Account JSON!", parent=self)
+            return
         url = self._sheet_url.get().strip()
-        if not url or not url.startswith("https://script.google.com"):
-            self._log("⚠  Vui lòng nhập Apps Script URL hợp lệ!")
+        if not url or "spreadsheet" not in url:
+            _mb.showwarning("URL không hợp lệ",
+                "Vui lòng nhập đúng Google Sheet URL.\n\n"
+                "Ví dụ:\nhttps://docs.google.com/spreadsheets/d/ABC123.../edit",
+                parent=self)
             return
         self._log("🔗  Đang kết nối...")
-        threading.Thread(target=self._do_preview, args=(url,), daemon=True).start()
+        self._connect_btn.configure(state="disabled", text="⏳  Đang kết nối...")
+        threading.Thread(target=self._do_preview, args=(self._json_path, url), daemon=True).start()
 
-    def _do_preview(self, url: str):
+    def _do_preview(self, json_path: str, url: str):
         try:
-            client   = SheetClient(url)
+            client   = SheetClient(json_path, url)
             client.ensure_header()
             all_rows = client.read_all()
             pending  = sum(1 for r in all_rows[1:] if len(r) > 1 and r[1].strip().lower() == "new")
@@ -212,7 +261,13 @@ class BatchWindow(ctk.CTkToplevel):
                 f"✅  Kết nối thành công! {len(all_rows)-1} hàng, {pending} hàng 'new'."))
             self.after(0, lambda: self._start_btn.configure(state="normal"))
         except Exception as e:
-            self.after(0, lambda: self._log(f"❌  Lỗi kết nối: {e}"))
+            err = str(e)
+            self.after(0, lambda: self._log(f"❌  Lỗi kết nối: {err}"))
+            self.after(0, lambda: _mb.showerror(
+                "Lỗi kết nối Google Sheets", err, parent=self))
+        finally:
+            self.after(0, lambda: self._connect_btn.configure(
+                state="normal", text="🔗  Kết nối & Xem trước"))
 
     def _populate_table(self, all_rows: list):
         for item in self._tree.get_children():
@@ -241,11 +296,11 @@ class BatchWindow(ctk.CTkToplevel):
     def _start(self):
         if self._running:
             return
-        url     = self._sheet_url.get().strip()
+        dl_dir  = self._dl_dir.get().strip()
         out_dir = self._out_dir.get().strip()
 
-        if not url or not out_dir:
-            self._log("⚠  Vui lòng điền đủ Apps Script URL và thư mục xuất!")
+        if not self._json_path or not self._sheet_url.get().strip() or not dl_dir or not out_dir:
+            self._log("⚠  Vui lòng điền đủ JSON, Sheet URL, thư mục tải về và thư mục hoàn thành!")
             return
 
         self._running = True
@@ -254,7 +309,9 @@ class BatchWindow(ctk.CTkToplevel):
         self._prog_bar.set(0)
 
         self._processor = BatchProcessor(
-            web_app_url=url,
+            json_path=self._json_path,
+            sheet_url=self._sheet_url.get().strip(),
+            download_dir=dl_dir,
             output_dir=out_dir,
             settings=self._settings,
             log_cb=lambda m: self.after(0, lambda msg=m: self._log(msg)),

@@ -4,3 +4,15 @@ customtkinter
 Pillow
 torch
 tqdm
+gspread
+google-auth
+yt-dlp
+playwright
+openai
+anthropic
+edge-tts
+gtts
+pydub
+requests
+opencv-python
+audioop-lts

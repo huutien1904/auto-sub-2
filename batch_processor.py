@@ -1,40 +1,14 @@
 """
-Batch processor — Google Sheets via Apps Script Web App.
-Không cần Service Account JSON, không cần Google Cloud Console.
-Chỉ cần URL của Apps Script Web App đã deploy.
+Batch processor — Google Sheets via Service Account JSON.
+Yêu cầu: file JSON Service Account từ Google Cloud Console.
 
 Thiết lập (1 lần duy nhất):
-1. Mở Google Sheet của bạn
-2. Extensions → Apps Script → dán đoạn script bên dưới → Save
-3. Deploy → New deployment → Web app → Execute as: Me, Who has access: Anyone → Deploy
-4. Copy URL dán vào ứng dụng
-
-======= APPS SCRIPT CODE (copy vào Google Apps Script) =======
-
-function doGet(e) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  const data  = sheet.getDataRange().getValues();
-  return ContentService
-    .createTextOutput(JSON.stringify({ok:true, data:data}))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function doPost(e) {
-  try {
-    const p     = JSON.parse(e.postData.contents);
-    const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    sheet.getRange(p.row, p.col).setValue(p.value);
-    return ContentService
-      .createTextOutput(JSON.stringify({ok:true}))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch(err) {
-    return ContentService
-      .createTextOutput(JSON.stringify({ok:false, error:err.toString()}))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}
-
-==============================================================
+1. Vào https://console.cloud.google.com
+2. Tạo project → Enable "Google Sheets API"
+3. IAM & Admin → Service Accounts → Create service account
+4. Tạo key JSON → tải về máy
+5. Mở Google Sheet → Share → thêm email của service account (Editor)
+6. Dán đường dẫn file JSON và URL sheet vào ứng dụng
 """
 
 import os
@@ -42,7 +16,8 @@ import tempfile
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-import requests as _req
+import gspread
+from google.oauth2.service_account import Credentials
 
 # ── Status constants ──────────────────────────────────────────────────────────
 
@@ -57,58 +32,134 @@ COL_LINK   = 1   # A
 COL_STATUS = 2   # B
 COL_ERROR  = 3   # C
 
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ── Apps Script API ───────────────────────────────────────────────────────────
+
+# ── Sheet Client ──────────────────────────────────────────────────────────────
 
 class SheetClient:
-    """Thin wrapper around Apps Script Web App endpoints."""
+    """Kết nối Google Sheets qua Service Account JSON."""
 
-    def __init__(self, web_app_url: str):
-        self.url = web_app_url.strip()
+    def __init__(self, json_path: str, sheet_url: str):
+        creds = Credentials.from_service_account_file(json_path, scopes=_SCOPES)
+        gc = gspread.authorize(creds)
+        if sheet_url.startswith("https://"):
+            self._ws = gc.open_by_url(sheet_url).sheet1
+        else:
+            self._ws = gc.open_by_key(sheet_url).sheet1
 
     def read_all(self) -> List[List[str]]:
-        """Return all rows as list of lists."""
-        r = _req.get(self.url, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if not data.get("ok"):
-            raise RuntimeError(f"Apps Script lỗi: {data}")
-        return data["data"]
+        """Trả về tất cả hàng dưới dạng list of lists."""
+        return self._ws.get_all_values()
 
     def write_cell(self, row: int, col: int, value: str) -> None:
-        """Write a single cell (1-indexed)."""
-        r = _req.post(
-            self.url,
-            json={"row": row, "col": col, "value": value},
-            timeout=15,
-        )
-        r.raise_for_status()
+        """Ghi một ô (1-indexed)."""
+        self._ws.update_cell(row, col, value)
 
     def ensure_header(self) -> None:
-        """Make sure row 1 has correct headers."""
+        """Đảm bảo hàng 1 có header đúng."""
         rows = self.read_all()
-        if not rows or rows[0][:3] != ["Link video", "Trạng thái", "Lý do lỗi"]:
-            for col, hdr in enumerate(["Link video", "Trạng thái", "Lý do lỗi"], 1):
-                self.write_cell(1, col, hdr)
+        headers = ["Link video", "Trạng thái", "Lý do lỗi"]
+        if not rows or rows[0][:3] != headers:
+            self._ws.update("A1:C1", [headers])
+
+
+def _build_title_from_entries(entries, max_len: int = 100) -> str:
+    """Ghép các câu phụ đề đầu tiên thành tên file ngắn gọn (fallback)."""
+    parts = []
+    total = 0
+    for e in entries:
+        text = (e.translated_text or e.original_text or "").strip().replace("\n", " ")
+        if not text:
+            continue
+        if total + len(text) > max_len:
+            remaining = max_len - total
+            if remaining > 10:
+                parts.append(text[:remaining].rstrip())
+            break
+        parts.append(text)
+        total += len(text) + 1
+        if total >= max_len:
+            break
+    title = " ".join(parts).strip()
+    return title if title else "video"
+
+
+def _generate_title_with_ai(entries, settings: dict) -> str:
+    """Dùng AI tóm tắt nội dung phụ đề thành tiêu đề ngắn gọn (~100 ký tự).
+    Fallback về _build_title_from_entries nếu không có API key."""
+
+    # Gom toàn bộ phụ đề đã dịch (tối đa 3000 ký tự để tránh tốn token)
+    all_text = " ".join(
+        (e.translated_text or e.original_text or "").strip().replace("\n", " ")
+        for e in entries if (e.translated_text or e.original_text)
+    )[:3000]
+
+    if not all_text:
+        return _build_title_from_entries(entries)
+
+    prompt = (
+        "Dựa vào nội dung phụ đề video dưới đây, hãy tạo một tiêu đề tiếng Việt "
+        "ngắn gọn, súc tích, mô tả đúng chủ đề video. "
+        "Tiêu đề tối đa 100 ký tự, không dùng ký tự đặc biệt như / \\ : * ? \" < > |. "
+        "Chỉ trả về tiêu đề, không giải thích.\n\n"
+        f"Nội dung:\n{all_text}"
+    )
+
+    provider  = settings.get("trans_provider", "google")
+    api_key   = settings.get("trans_api_key", "")
+    ai_model  = settings.get("trans_model", "")
+
+    try:
+        if provider == "openai" and api_key:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model=ai_model or "gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=80,
+                temperature=0.3,
+            )
+            title = resp.choices[0].message.content.strip()
+
+        elif provider == "anthropic" and api_key:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=ai_model or "claude-haiku-4-5-20251001",
+                max_tokens=80,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            title = resp.content[0].text.strip()
+
+        else:
+            return _build_title_from_entries(entries)
+
+        # Bỏ dấu nháy bọc ngoài nếu AI trả về có dấu nháy
+        title = title.strip('"\'""''')
+        return title[:100] if title else _build_title_from_entries(entries)
+
+    except Exception:
+        return _build_title_from_entries(entries)
 
 
 def get_pending_rows(rows: List[List[str]]) -> List[Tuple[int, str]]:
-    """Return (sheet_row_number, link) for rows with status 'new'."""
+    """Trả về (sheet_row_number, link) cho các hàng có status 'new'."""
     pending = []
     for i, row in enumerate(rows):
         if i == 0:
-            continue   # skip header
+            continue   # bỏ qua header
         link   = row[0].strip() if len(row) > 0 else ""
         status = row[1].strip().lower() if len(row) > 1 else ""
         if link and status == ST_NEW:
-            pending.append((i + 1, link))   # sheet rows are 1-indexed
+            pending.append((i + 1, link))   # sheet rows 1-indexed
     return pending
 
 
-def test_connection(web_app_url: str) -> Tuple[bool, str]:
-    """Return (ok, message)."""
+def test_connection(json_path: str, sheet_url: str) -> Tuple[bool, str]:
+    """Kiểm tra kết nối. Trả về (ok, message)."""
     try:
-        client = SheetClient(web_app_url)
+        client = SheetClient(json_path, sheet_url)
         rows   = client.read_all()
         return True, f"Kết nối thành công! Sheet có {len(rows)} hàng."
     except Exception as e:
@@ -120,14 +171,18 @@ def test_connection(web_app_url: str) -> Tuple[bool, str]:
 class BatchProcessor:
     def __init__(
         self,
-        web_app_url: str,
+        json_path: str,
+        sheet_url: str,
+        download_dir: str,
         output_dir: str,
         settings: Dict,
-        log_cb:        Optional[Callable[[str], None]]        = None,
-        progress_cb:   Optional[Callable[[int, int], None]]   = None,
+        log_cb:        Optional[Callable[[str], None]]           = None,
+        progress_cb:   Optional[Callable[[int, int], None]]      = None,
         row_update_cb: Optional[Callable[[int, str, str], None]] = None,
     ):
-        self.url           = web_app_url
+        self.json_path     = json_path
+        self.sheet_url     = sheet_url
+        self.download_dir  = download_dir
         self.output_dir    = output_dir
         self.settings      = settings
         self.log_cb        = log_cb        or print
@@ -141,8 +196,8 @@ class BatchProcessor:
 
     def run(self) -> None:
         try:
-            self.log_cb("🔗  Đang kết nối Google Sheets qua Apps Script...")
-            self._client = SheetClient(self.url)
+            self.log_cb("🔗  Đang kết nối Google Sheets qua Service Account...")
+            self._client = SheetClient(self.json_path, self.sheet_url)
             self._client.ensure_header()
 
             all_rows = self._client.read_all()
@@ -183,8 +238,9 @@ class BatchProcessor:
         self.log_cb("  📥  Đang tải video...")
         from downloader import download_video, extract_url
         clean = extract_url(link) or link
+        os.makedirs(self.download_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
-        video = download_video(clean, self.output_dir,
+        video = download_video(clean, self.download_dir,
                                progress_callback=lambda m, p: self.log_cb(f"  {m}"))
         self._set(row_num, ST_DOWNLOADED)
         self.log_cb(f"  ✅  Đã tải: {os.path.basename(video)[:50]}")
@@ -247,8 +303,13 @@ class BatchProcessor:
         with open(srt_tmp, "w", encoding="utf-8-sig") as f:
             f.write(write_srt(entries, use_translation=True))
 
-        base    = os.path.splitext(os.path.basename(video))[0][:40]
-        out_mp4 = os.path.join(self.output_dir, f"{base}_vi.mp4")
+        # Đặt tên file bằng AI dựa trên nội dung phụ đề
+        import re as _re
+        self.log_cb("  🤖  AI đang tạo tiêu đề cho video...")
+        content_title = _generate_title_with_ai(entries, self.settings)
+        safe_name = _re.sub(r'[\\/:*?"<>|]', "_", content_title).strip() or "video"
+        self.log_cb(f"  📝  Tiêu đề: {safe_name}")
+        out_mp4 = os.path.join(self.output_dir, f"{safe_name}.mp4")
 
         export_with_dubbing(
             video, dubbed, srt_tmp, out_mp4,
