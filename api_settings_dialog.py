@@ -2,11 +2,12 @@
 
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
 import config as cfg
+import glossary as _gl
 
 
 class ApiSettingsDialog(ctk.CTkToplevel):
@@ -14,7 +15,7 @@ class ApiSettingsDialog(ctk.CTkToplevel):
         super().__init__(parent)
 
         self.title("Cài đặt API")
-        self.geometry("580x580")
+        self.geometry("620x620")
         self.resizable(False, False)
         self.grab_set()
 
@@ -35,13 +36,15 @@ class ApiSettingsDialog(ctk.CTkToplevel):
         ).pack(pady=(16, 2))
 
         # Tabs
-        self._tabs = ctk.CTkTabview(self, height=420)
+        self._tabs = ctk.CTkTabview(self, height=440)
         self._tabs.pack(fill="both", expand=True, padx=16, pady=(4, 0))
         self._tabs.add("🌐  Dịch thuật")
         self._tabs.add("🎙  Lồng tiếng")
+        self._tabs.add("📚  Thuật ngữ")
 
         self._build_translation_tab(self._tabs.tab("🌐  Dịch thuật"))
         self._build_dubbing_tab(self._tabs.tab("🎙  Lồng tiếng"))
+        self._build_glossary_tab(self._tabs.tab("📚  Thuật ngữ"))
 
         # Bottom bar
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -192,6 +195,142 @@ class ApiSettingsDialog(ctk.CTkToplevel):
             justify="left",
         ).grid(row=5, column=0, padx=14, pady=(0, 10), sticky="w")
 
+    # ── Glossary tab ──────────────────────────────────────────────────────────
+
+    def _build_glossary_tab(self, tab):
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            tab,
+            text="Định nghĩa các từ cần dịch cố định — không bao giờ bị dịch sai.",
+            font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"), anchor="w",
+        ).grid(row=0, column=0, padx=8, pady=(6, 4), sticky="ew")
+
+        # Table
+        tbl_wrap = ctk.CTkFrame(tab)
+        tbl_wrap.grid(row=1, column=0, sticky="nsew", padx=4, pady=2)
+        tbl_wrap.grid_columnconfigure(0, weight=1)
+        tbl_wrap.grid_rowconfigure(0, weight=1)
+
+        style = ttk.Style()
+        style.configure("Gl.Treeview",
+                        background="#1e1e2e", foreground="#cdd6f4",
+                        fieldbackground="#1e1e2e", rowheight=34,
+                        font=("Segoe UI", 11))
+        style.configure("Gl.Treeview.Heading",
+                        background="#1f538d", foreground="white",
+                        font=("Segoe UI", 10, "bold"))
+        style.map("Gl.Treeview", background=[("selected", "#313244")])
+
+        self._gl_tree = ttk.Treeview(
+            tbl_wrap, style="Gl.Treeview",
+            columns=("source", "target"), show="headings",
+            selectmode="browse",
+        )
+        self._gl_tree.heading("source", text="Từ gốc (ngôn ngữ video)")
+        self._gl_tree.heading("target", text="Dịch sang tiếng Việt")
+        self._gl_tree.column("source", width=220, minwidth=120)
+        self._gl_tree.column("target", width=220, minwidth=120)
+
+        vsb = ttk.Scrollbar(tbl_wrap, orient="vertical", command=self._gl_tree.yview)
+        self._gl_tree.configure(yscrollcommand=vsb.set)
+        self._gl_tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        self._gl_tree.bind("<Double-1>", self._gl_on_dblclick)
+
+        # Load existing terms
+        for src, tgt in _gl.load():
+            self._gl_tree.insert("", "end", values=(src, tgt))
+
+        # Buttons
+        btn_row = ctk.CTkFrame(tab, fg_color="transparent")
+        btn_row.grid(row=2, column=0, padx=4, pady=(4, 2), sticky="w")
+
+        ctk.CTkButton(btn_row, text="➕  Thêm dòng", width=120, height=30,
+                      fg_color="#1565C0", hover_color="#0D47A1",
+                      command=self._gl_add_row).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(btn_row, text="🗑  Xóa dòng", width=110, height=30,
+                      fg_color=("#B71C1C", "#7f1d1d"), hover_color=("#C62828", "#991b1b"),
+                      command=self._gl_delete_row).pack(side="left")
+
+        ctk.CTkLabel(
+            tab,
+            text="💡 Ví dụ cầu lông: 羽毛球 → cầu lông  |  球 → cầu  |  球拍 → vợt",
+            font=ctk.CTkFont(size=10), text_color=("gray50", "gray55"), anchor="w",
+        ).grid(row=3, column=0, padx=8, pady=(2, 4), sticky="ew")
+
+    def _gl_add_row(self):
+        """Mở dialog nhập từ mới."""
+        win = ctk.CTkToplevel(self)
+        win.title("Thêm thuật ngữ")
+        win.geometry("380x160")
+        win.resizable(False, False)
+        win.grab_set()
+
+        ctk.CTkLabel(win, text="Từ gốc (ngôn ngữ video):").pack(padx=20, pady=(16, 2), anchor="w")
+        src_var = tk.StringVar()
+        ctk.CTkEntry(win, textvariable=src_var, width=340).pack(padx=20)
+
+        ctk.CTkLabel(win, text="Dịch sang tiếng Việt:").pack(padx=20, pady=(10, 2), anchor="w")
+        tgt_var = tk.StringVar()
+        ctk.CTkEntry(win, textvariable=tgt_var, width=340).pack(padx=20)
+
+        def _confirm():
+            src = src_var.get().strip()
+            tgt = tgt_var.get().strip()
+            if src and tgt:
+                self._gl_tree.insert("", "end", values=(src, tgt))
+            win.destroy()
+
+        ctk.CTkButton(win, text="✅  Thêm", command=_confirm,
+                      fg_color="#2E7D32", hover_color="#1B5E20").pack(pady=12)
+        win.bind("<Return>", lambda _: _confirm())
+
+    def _gl_delete_row(self):
+        sel = self._gl_tree.selection()
+        if sel:
+            self._gl_tree.delete(sel[0])
+
+    def _gl_on_dblclick(self, event):
+        """Chỉnh sửa ô khi double-click."""
+        region = self._gl_tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row_id = self._gl_tree.identify_row(event.y)
+        col    = self._gl_tree.identify_column(event.x)
+        if not row_id:
+            return
+        col_idx = int(col.replace("#", "")) - 1
+        vals = list(self._gl_tree.item(row_id, "values"))
+        bbox = self._gl_tree.bbox(row_id, col)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        var = tk.StringVar(value=vals[col_idx])
+        entry = tk.Entry(self._gl_tree, textvariable=var,
+                         font=("Segoe UI", 11),
+                         bg="#1f538d", fg="white",
+                         insertbackground="white", relief="flat")
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+
+        def _save(e=None):
+            vals[col_idx] = var.get().strip()
+            self._gl_tree.item(row_id, values=vals)
+            entry.destroy()
+
+        entry.bind("<Return>",   _save)
+        entry.bind("<Tab>",      _save)
+        entry.bind("<FocusOut>", _save)
+        entry.bind("<Escape>",   lambda e: entry.destroy())
+
+    def _gl_get_terms(self):
+        return [(self._gl_tree.item(r, "values")[0],
+                 self._gl_tree.item(r, "values")[1])
+                for r in self._gl_tree.get_children()]
+
     # ── Helper: build a labelled key entry + 👁 button ────────────────────────
 
     def _build_key_section(self, parent, label, placeholder, key_attr, entry_attr, row_start):
@@ -271,7 +410,10 @@ class ApiSettingsDialog(ctk.CTkToplevel):
             messagebox.showwarning("Thiếu key", "Vui lòng nhập Anthropic API Key!", parent=self)
             return
 
-        # Merge into existing config (preserves tts_provider etc.)
+        # Lưu glossary
+        _gl.save(self._gl_get_terms())
+
+        # Merge into existing config
         existing = cfg.load()
         existing.update(data)
         cfg.save(existing)

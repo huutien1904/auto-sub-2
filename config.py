@@ -14,6 +14,8 @@ _DEFAULTS: dict = {
     # TTS / dubbing
     "tts_provider": "edge",        # "edge" | "openai" | "fptai"
     "fptai_api_key": "",
+    # Glossary — bảng thuật ngữ cố định
+    "glossary": [],                # [{"source": "羽毛球", "target": "cầu lông"}, ...]
 }
 
 _OPENAI_MODELS = [

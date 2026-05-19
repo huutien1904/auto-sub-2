@@ -17,12 +17,22 @@ def translate_entries(
     progress_callback: Optional[Callable[[str, float], None]] = None,
 ) -> None:
     """Translate subtitle entries in-place (modifies translated_text)."""
+    import glossary as _gl
+
+    # Áp dụng glossary trước khi dịch
+    terms = _gl.load()
+    reverse_maps = _gl.apply_to_entries(entries, terms) if terms else []
+
     if provider == "openai":
         _translate_openai(entries, source_lang, target_lang, api_key, model, progress_callback)
     elif provider == "claude":
         _translate_claude(entries, source_lang, target_lang, api_key, model, progress_callback)
     else:
         _translate_google(entries, source_lang, target_lang, progress_callback)
+
+    # Khôi phục thuật ngữ đúng sau khi dịch
+    if reverse_maps:
+        _gl.restore_entries(entries, reverse_maps)
 
 
 # ── Google Translate (free) ───────────────────────────────────────────────────

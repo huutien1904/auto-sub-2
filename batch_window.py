@@ -35,24 +35,32 @@ class BatchWindow(ctk.CTkToplevel):
         self._settings     = app_settings
         self._processor: Optional[BatchProcessor] = None
         self._running      = False
-        self._row_map: dict[int, str] = {}   # row_num → tree item id
+        self._row_map: dict[int, str] = {}
         self._json_path    = ""
+        self._logo_path    = app_settings.get("logo_path", "") or ""
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Giữ cửa sổ luôn nằm trên cửa sổ chính
+        self.transient(parent)
+        self.after(200, self._init_focus)
+
+    def _init_focus(self):
+        self.lift()
+        self.focus_force()
+        self.attributes("-topmost", True)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)   # bảng chiếm phần lớn
 
         # ── Header ────────────────────────────────────────────────────────────
         ctk.CTkLabel(
-            self,
-            text="📊  Xử lý hàng loạt từ Google Sheets",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            anchor="w",
+            self, text="📊  Xử lý hàng loạt từ Google Sheets",
+            font=ctk.CTkFont(size=18, weight="bold"), anchor="w",
         ).grid(row=0, column=0, padx=20, pady=(14, 4), sticky="ew")
 
         # ── Config card ───────────────────────────────────────────────────────
@@ -60,59 +68,92 @@ class BatchWindow(ctk.CTkToplevel):
         cfg.grid(row=1, column=0, padx=14, pady=4, sticky="ew")
         cfg.grid_columnconfigure(1, weight=1)
 
-        # Service Account JSON
+        # Row 0: JSON
         ctk.CTkLabel(cfg, text="🔑  Service Account JSON:", font=ctk.CTkFont(weight="bold"),
-                     width=200, anchor="w").grid(row=0, column=0, padx=(14,6), pady=6, sticky="w")
+                     width=180, anchor="w").grid(row=0, column=0, padx=(14,6), pady=(8,4), sticky="w")
         self._json_lbl = ctk.CTkLabel(cfg, text="  Chưa chọn file...",
-                                       anchor="w", fg_color=("gray82","gray22"),
-                                       corner_radius=6, height=32)
-        self._json_lbl.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        ctk.CTkButton(cfg, text="📂", width=36, height=32,
-                      command=self._browse_json
-                      ).grid(row=0, column=2, padx=(4,14), pady=6)
+                                       anchor="w", fg_color=("gray82","gray22"), corner_radius=6, height=30)
+        self._json_lbl.grid(row=0, column=1, padx=4, pady=(8,4), sticky="ew")
+        ctk.CTkButton(cfg, text="📂", width=34, height=30, command=self._browse_json
+                      ).grid(row=0, column=2, padx=(4,6), pady=(8,4))
+        ctk.CTkButton(cfg, text="❓", width=34, height=30,
+                      fg_color="transparent", border_width=1,
+                      command=self._show_help).grid(row=0, column=3, padx=(0,14), pady=(8,4))
 
-        # Help button
-        ctk.CTkButton(
-            cfg, text="❓  Cách tạo JSON", width=130, height=26,
-            fg_color="transparent", hover_color=("gray80","gray25"),
-            text_color=("#1565C0","#64B5F6"), border_width=1,
-            border_color=("gray70","gray40"),
-            command=self._show_help,
-        ).grid(row=1, column=0, padx=14, pady=(0,6), sticky="w")
-
-        # Google Sheet URL
+        # Row 1: Sheet URL
         ctk.CTkLabel(cfg, text="📋  Google Sheet URL:", font=ctk.CTkFont(weight="bold"),
-                     width=200, anchor="w").grid(row=2, column=0, padx=(14,6), pady=6, sticky="w")
+                     width=180, anchor="w").grid(row=1, column=0, padx=(14,6), pady=4, sticky="w")
         self._sheet_url = tk.StringVar()
-        ctk.CTkEntry(cfg, textvariable=self._sheet_url, height=32,
+        ctk.CTkEntry(cfg, textvariable=self._sheet_url, height=30,
                      placeholder_text="https://docs.google.com/spreadsheets/d/..."
-                     ).grid(row=2, column=1, columnspan=2, padx=(4,14), pady=6, sticky="ew")
+                     ).grid(row=1, column=1, columnspan=3, padx=(4,14), pady=4, sticky="ew")
 
-        # Download dir
-        ctk.CTkLabel(cfg, text="📥  Thư mục tải video:", font=ctk.CTkFont(weight="bold"),
-                     width=200, anchor="w").grid(row=3, column=0, padx=(14,6), pady=6, sticky="w")
+        # Row 2: Thư mục tải + hoàn thành (gộp 1 hàng)
+        dirs_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        dirs_row.grid(row=2, column=0, columnspan=4, padx=10, pady=4, sticky="ew")
+        dirs_row.grid_columnconfigure(1, weight=1)
+        dirs_row.grid_columnconfigure(3, weight=1)
+
+        ctk.CTkLabel(dirs_row, text="📥 Tải về:", font=ctk.CTkFont(size=11, weight="bold"),
+                     width=70).grid(row=0, column=0, padx=(4,4), sticky="w")
         self._dl_dir = tk.StringVar()
-        ctk.CTkEntry(cfg, textvariable=self._dl_dir, height=32,
-                     placeholder_text="Thư mục lưu video gốc tải về..."
-                     ).grid(row=3, column=1, padx=4, pady=6, sticky="ew")
-        ctk.CTkButton(cfg, text="📂", width=36, height=32,
-                      command=self._browse_dl_dir
-                      ).grid(row=3, column=2, padx=(4,14), pady=6)
+        ctk.CTkEntry(dirs_row, textvariable=self._dl_dir, height=30,
+                     placeholder_text="Thư mục video gốc..."
+                     ).grid(row=0, column=1, padx=(0,4), sticky="ew")
+        ctk.CTkButton(dirs_row, text="📂", width=32, height=30,
+                      command=self._browse_dl_dir).grid(row=0, column=2, padx=(0,12))
 
-        # Output dir
-        ctk.CTkLabel(cfg, text="✅  Thư mục video hoàn thành:", font=ctk.CTkFont(weight="bold"),
-                     width=200, anchor="w").grid(row=4, column=0, padx=(14,6), pady=6, sticky="w")
+        ctk.CTkLabel(dirs_row, text="✅ Hoàn thành:", font=ctk.CTkFont(size=11, weight="bold"),
+                     width=90).grid(row=0, column=3, padx=(0,4), sticky="w")
         self._out_dir = tk.StringVar()
-        ctk.CTkEntry(cfg, textvariable=self._out_dir, height=32,
-                     placeholder_text="Thư mục lưu video đã dịch xong..."
-                     ).grid(row=4, column=1, padx=4, pady=6, sticky="ew")
-        ctk.CTkButton(cfg, text="📂", width=36, height=32,
-                      command=self._browse_out_dir
-                      ).grid(row=4, column=2, padx=(4,14), pady=6)
+        ctk.CTkEntry(dirs_row, textvariable=self._out_dir, height=30,
+                     placeholder_text="Thư mục video đã dịch..."
+                     ).grid(row=0, column=4, padx=(0,4), sticky="ew")
+        dirs_row.grid_columnconfigure(4, weight=1)
+        ctk.CTkButton(dirs_row, text="📂", width=32, height=30,
+                      command=self._browse_out_dir).grid(row=0, column=5, padx=(0,4))
 
-        # Action buttons
-        act = ctk.CTkFrame(cfg, fg_color="transparent")
-        act.grid(row=5, column=0, columnspan=3, padx=14, pady=(4, 12), sticky="w")
+        # Row 3: Logo (gọn 1 hàng)
+        logo_row = ctk.CTkFrame(cfg, fg_color="transparent")
+        logo_row.grid(row=3, column=0, columnspan=4, padx=10, pady=(4,8), sticky="ew")
+        logo_row.grid_columnconfigure(2, weight=1)
+
+        ctk.CTkLabel(logo_row, text="🔲 Logo:", font=ctk.CTkFont(size=11, weight="bold"),
+                     width=60).grid(row=0, column=0, padx=(4,6), sticky="w")
+
+        self._logo_enabled_var = tk.BooleanVar(value=bool(self._settings.get("logo_enabled", False)))
+        ctk.CTkCheckBox(logo_row, text="Bật", variable=self._logo_enabled_var,
+                        width=55).grid(row=0, column=1, padx=(0,8), sticky="w")
+
+        init_logo = os.path.basename(self._logo_path) if self._logo_path else "Chưa chọn file logo..."
+        self._logo_lbl = ctk.CTkLabel(logo_row, text=f"  {init_logo}",
+                                       anchor="w", fg_color=("gray82","gray22"),
+                                       corner_radius=6, height=28)
+        self._logo_lbl.grid(row=0, column=2, padx=(0,6), sticky="ew")
+        ctk.CTkButton(logo_row, text="📂", width=32, height=28,
+                      command=self._browse_logo).grid(row=0, column=3, padx=(0,8))
+
+        ctk.CTkLabel(logo_row, text="🌫", font=ctk.CTkFont(size=11)).grid(row=0, column=4, padx=(0,2))
+        self._logo_opacity_var = tk.IntVar(value=int(self._settings.get("logo_opacity", 0.3) * 100))
+        self._logo_op_lbl = ctk.CTkLabel(logo_row, text=f"{self._logo_opacity_var.get()}%",
+                                          width=34, font=ctk.CTkFont(size=11, weight="bold"))
+        self._logo_op_lbl.grid(row=0, column=5)
+        ctk.CTkSlider(logo_row, from_=1, to=100, variable=self._logo_opacity_var, width=90,
+                      command=lambda v: self._logo_op_lbl.configure(text=f"{int(v)}%")
+                      ).grid(row=0, column=6, padx=(0,10))
+
+        ctk.CTkLabel(logo_row, text="📐", font=ctk.CTkFont(size=11)).grid(row=0, column=7, padx=(0,2))
+        self._logo_size_var = tk.IntVar(value=self._settings.get("logo_size", 120))
+        self._logo_sz_lbl = ctk.CTkLabel(logo_row, text=f"{self._logo_size_var.get()}px",
+                                          width=40, font=ctk.CTkFont(size=11, weight="bold"))
+        self._logo_sz_lbl.grid(row=0, column=8)
+        ctk.CTkSlider(logo_row, from_=20, to=400, variable=self._logo_size_var, width=90,
+                      command=lambda v: self._logo_sz_lbl.configure(text=f"{int(v)}px")
+                      ).grid(row=0, column=9, padx=(0,4))
+
+        # ── Action buttons — ngoài cfg, luôn hiển thị ─────────────────────────
+        act = ctk.CTkFrame(self, fg_color="transparent")
+        act.grid(row=2, column=0, padx=14, pady=(2, 6), sticky="w")
 
         self._connect_btn = ctk.CTkButton(
             act, text="🔗  Kết nối & Xem trước", height=36,
@@ -135,7 +176,7 @@ class BatchWindow(ctk.CTkToplevel):
 
         # ── Sheet table ───────────────────────────────────────────────────────
         tbl_wrap = ctk.CTkFrame(self)
-        tbl_wrap.grid(row=2, column=0, padx=14, pady=4, sticky="nsew")
+        tbl_wrap.grid(row=3, column=0, padx=14, pady=4, sticky="nsew")
         tbl_wrap.grid_columnconfigure(0, weight=1)
         tbl_wrap.grid_rowconfigure(0, weight=1)
 
@@ -151,18 +192,22 @@ class BatchWindow(ctk.CTkToplevel):
 
         self._tree = ttk.Treeview(
             tbl_wrap, style="Batch.Treeview",
-            columns=("no", "link", "status", "error"),
+            columns=("no", "link", "status", "error", "output"),
             show="headings", selectmode="browse",
         )
-        self._tree.heading("no",     text="#",          anchor="center")
+        self._tree.heading("no",     text="#",               anchor="center")
         self._tree.heading("link",   text="Link video")
-        self._tree.heading("status", text="Trạng thái", anchor="center")
+        self._tree.heading("status", text="Trạng thái",      anchor="center")
         self._tree.heading("error",  text="Lý do lỗi")
+        self._tree.heading("output", text="Video hoàn thành")
 
         self._tree.column("no",     width=40,  minwidth=36,  anchor="center", stretch=False)
-        self._tree.column("link",   width=380, minwidth=200)
-        self._tree.column("status", width=180, minwidth=130, anchor="center", stretch=False)
-        self._tree.column("error",  width=300, minwidth=120)
+        self._tree.column("link",   width=260, minwidth=150)
+        self._tree.column("status", width=150, minwidth=110, anchor="center", stretch=False)
+        self._tree.column("error",  width=200, minwidth=100)
+        self._tree.column("output", width=280, minwidth=150)
+
+        self._tree.bind("<Double-1>", self._on_output_dblclick)
 
         vsb = ttk.Scrollbar(tbl_wrap, orient="vertical", command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
@@ -176,7 +221,7 @@ class BatchWindow(ctk.CTkToplevel):
 
         # ── Log + progress ────────────────────────────────────────────────────
         bottom = ctk.CTkFrame(self, fg_color="transparent")
-        bottom.grid(row=3, column=0, padx=14, pady=(4, 12), sticky="ew")
+        bottom.grid(row=4, column=0, padx=14, pady=(4, 12), sticky="ew")
         bottom.grid_columnconfigure(0, weight=1)
 
         self._log_var = tk.StringVar(value="Chờ kết nối...")
@@ -224,6 +269,16 @@ class BatchWindow(ctk.CTkToplevel):
             "✅ Xong!",
             parent=self,
         )
+
+    def _browse_logo(self):
+        path = filedialog.askopenfilename(
+            title="Chọn ảnh logo",
+            filetypes=[("Ảnh", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Tất cả", "*.*")],
+        )
+        if path:
+            self._logo_path = path
+            self._logo_lbl.configure(text=f"  {os.path.basename(path)}")
+            self._logo_enabled_var.set(True)
 
     def _browse_dl_dir(self):
         p = filedialog.askdirectory(title="Chọn thư mục lưu video tải về")
@@ -288,8 +343,9 @@ class BatchWindow(ctk.CTkToplevel):
                    else "error" if status == "lỗi"
                    else "new")
 
+            output = row[3].strip() if len(row) > 3 else ""
             item_id = self._tree.insert("", "end",
-                                         values=(i, link[:60], status, error[:60]),
+                                         values=(i, link[:60], status, error[:60], output[:60]),
                                          tags=(tag,))
             self._row_map[i + 1] = item_id   # sheet row = i+1 (1-indexed with header)
 
@@ -308,6 +364,12 @@ class BatchWindow(ctk.CTkToplevel):
         self._stop_btn.configure(state="normal")
         self._prog_bar.set(0)
 
+        # Cập nhật logo settings từ UI vào settings
+        self._settings["logo_path"]    = self._logo_path
+        self._settings["logo_enabled"] = self._logo_enabled_var.get()
+        self._settings["logo_opacity"] = self._logo_opacity_var.get() / 100.0
+        self._settings["logo_size"]    = self._logo_size_var.get()
+
         self._processor = BatchProcessor(
             json_path=self._json_path,
             sheet_url=self._sheet_url.get().strip(),
@@ -316,7 +378,7 @@ class BatchWindow(ctk.CTkToplevel):
             settings=self._settings,
             log_cb=lambda m: self.after(0, lambda msg=m: self._log(msg)),
             progress_cb=lambda d, t: self.after(0, lambda done=d, total=t: self._update_progress(done, total)),
-            row_update_cb=lambda r, s, e: self.after(0, lambda rr=r, ss=s, ee=e: self._update_row(rr, ss, ee)),
+            row_update_cb=lambda r, s, e, o="": self.after(0, lambda rr=r, ss=s, ee=e, oo=o: self._update_row(rr, ss, ee, oo)),
         )
         threading.Thread(target=self._run_batch, daemon=True).start()
 
@@ -344,7 +406,7 @@ class BatchWindow(ctk.CTkToplevel):
             self._prog_bar.set(done / total)
             self._prog_lbl.configure(text=f"{done}/{total}")
 
-    def _update_row(self, row_num: int, status: str, error: str):
+    def _update_row(self, row_num: int, status: str, error: str, output: str = ""):
         item_id = self._row_map.get(row_num)
         if not item_id:
             return
@@ -352,10 +414,36 @@ class BatchWindow(ctk.CTkToplevel):
                else "error"   if status == "lỗi"
                else "running")
         vals = list(self._tree.item(item_id, "values"))
+        while len(vals) < 5:
+            vals.append("")
         vals[2] = status
         vals[3] = error[:60] if error else ""
+        if output:
+            vals[4] = os.path.basename(output)
         self._tree.item(item_id, values=vals, tags=(tag,))
         self._tree.see(item_id)
+
+    def _on_output_dblclick(self, event):
+        """Double-click vào cột Video hoàn thành → mở file explorer."""
+        col = self._tree.identify_column(event.x)
+        if col != "#5":
+            return
+        row_id = self._tree.identify_row(event.y)
+        if not row_id:
+            return
+        vals = self._tree.item(row_id, "values")
+        if len(vals) < 5 or not vals[4]:
+            return
+        # Tìm full path từ output_dir + filename
+        out_dir = self._out_dir.get().strip()
+        fname   = vals[4]
+        full    = os.path.join(out_dir, fname) if out_dir else fname
+        if os.path.exists(full):
+            import subprocess
+            subprocess.Popen(f'explorer /select,"{full}"')
+        else:
+            import subprocess
+            subprocess.Popen(f'explorer "{out_dir}"')
 
     def _on_close(self):
         if self._processor:

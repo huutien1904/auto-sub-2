@@ -16,7 +16,8 @@
       "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import openai, anthropic, edge_tts, gtts, pydub, cv2; print\\('T?t c? OK'\\)\")",
       "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install pyaudioop 2>&1)",
       "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -m pip install audioop-lts 2>&1)",
-      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import openai, anthropic, edge_tts, gtts, pydub, cv2; print\\('OK'\\)\")"
+      "PowerShell(c:\\\\work\\\\auto-sub-2\\\\.venv\\\\Scripts\\\\python.exe -c \"import openai, anthropic, edge_tts, gtts, pydub, cv2; print\\('OK'\\)\")",
+      "PowerShell($f = \"c:\\\\work\\\\auto-sub-2\\\\cookies.txt\"; if \\(Test-Path $f\\) { $size = \\(Get-Item $f\\).Length; $age = \\(Get-Date\\) - \\(Get-Item $f\\).LastWriteTime; Write-Output \"Tồn tại | Size: $size bytes | Tạo: $\\([int]$age.TotalHours\\) giờ trước\" } else { Write-Output \"Không có file cookies.txt\" })"
     ]
   }
 }

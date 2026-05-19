@@ -404,9 +404,61 @@ class VideoTranslatorApp(ctk.CTk):
                               ).grid(row=r, column=1, padx=6, pady=8, sticky="w")
             r += 1
 
-        # ── D: Progress + action ──────────────────────────────────────────────
+        # ── D: Logo card ──────────────────────────────────────────────────────
+        lo_outer, lo_card = self._card(scroll, "🔲  Logo / Watermark")
+        lo_outer.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
+        lo_card.grid_columnconfigure(1, weight=1)
+
+        self._logo_path: Optional[str] = None
+        self._logo_enabled = tk.BooleanVar(value=False)
+
+        lo_row1 = ctk.CTkFrame(lo_card, fg_color="transparent")
+        lo_row1.grid(row=0, column=0, columnspan=3, padx=14, pady=(10,4), sticky="ew")
+        lo_row1.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkCheckBox(lo_row1, text="Thêm logo vào video",
+                        variable=self._logo_enabled,
+                        font=ctk.CTkFont(size=13)).grid(row=0, column=0, sticky="w")
+
+        self._logo_lbl = ctk.CTkLabel(
+            lo_row1, text="  Chưa chọn ảnh logo...",
+            anchor="w", fg_color=("gray82","gray22"), corner_radius=6, height=28)
+        self._logo_lbl.grid(row=0, column=1, padx=(12,6), sticky="ew")
+
+        ctk.CTkButton(lo_row1, text="📂", width=36, height=28,
+                      command=self._pick_logo).grid(row=0, column=2)
+
+        lo_row2 = ctk.CTkFrame(lo_card, fg_color="transparent")
+        lo_row2.grid(row=1, column=0, columnspan=3, padx=14, pady=(0,4), sticky="w")
+
+        ctk.CTkLabel(lo_row2, text="🌫  Độ mờ:",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,6))
+        self._logo_opacity = tk.IntVar(value=30)
+        self._logo_op_lbl = ctk.CTkLabel(lo_row2, text="30%", width=40,
+                                          font=ctk.CTkFont(size=11, weight="bold"))
+        self._logo_op_lbl.pack(side="left")
+        ctk.CTkSlider(lo_row2, from_=1, to=100, variable=self._logo_opacity,
+                      width=160, command=lambda v: self._logo_op_lbl.configure(
+                          text=f"{int(v)}%")).pack(side="left", padx=(0,20))
+
+        ctk.CTkLabel(lo_row2, text="📐  Kích thước:",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,6))
+        self._logo_size = tk.IntVar(value=120)
+        self._logo_sz_lbl = ctk.CTkLabel(lo_row2, text="120px", width=50,
+                                          font=ctk.CTkFont(size=11, weight="bold"))
+        self._logo_sz_lbl.pack(side="left")
+        ctk.CTkSlider(lo_row2, from_=20, to=400, variable=self._logo_size,
+                      width=160, command=lambda v: self._logo_sz_lbl.configure(
+                          text=f"{int(v)}px")).pack(side="left")
+
+        ctk.CTkLabel(lo_card,
+                     text="💡 Logo di chuyển từ góc trên phải → góc dưới trái suốt video",
+                     font=ctk.CTkFont(size=10), text_color=("gray50","gray55"), anchor="w",
+                     ).grid(row=2, column=0, columnspan=3, padx=14, pady=(0,8), sticky="w")
+
+        # ── E: Progress + action ──────────────────────────────────────────────
         act = ctk.CTkFrame(scroll, fg_color="transparent")
-        act.grid(row=3, column=0, padx=6, pady=(8, 16), sticky="ew")
+        act.grid(row=4, column=0, padx=6, pady=(8, 16), sticky="ew")
         act.grid_columnconfigure(1, weight=1)
 
         self._s1_start_btn = ctk.CTkButton(
@@ -1135,9 +1187,44 @@ class VideoTranslatorApp(ctk.CTk):
                       command=lambda v: self._s3_fs_lbl.configure(text=f"{int(v)} px")
                       ).pack(side="left")
 
+        # ── Music card ────────────────────────────────────────────────────────
+        mu_outer, mu_card = self._card(scroll, "🎵  Nhạc nền")
+        mu_outer.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+        mu_card.grid_columnconfigure(1, weight=1)
+
+        self._s3_music_enabled = tk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            mu_card, text="Thêm nhạc nền vào video",
+            variable=self._s3_music_enabled,
+            font=ctk.CTkFont(size=13),
+            command=self._s3_toggle_music,
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+
+        from video_processor import pick_random_music
+        music_files = self._s3_get_music_list()
+        music_hint  = f"{len(music_files)} bài — random mỗi lần xuất" if music_files else "Chưa có nhạc — thêm file vào thư mục music/"
+        self._s3_music_hint = ctk.CTkLabel(
+            mu_card, text=music_hint,
+            font=ctk.CTkFont(size=11), text_color=("gray50","gray60"), anchor="w",
+        )
+        self._s3_music_hint.grid(row=0, column=1, padx=6, pady=(10,4), sticky="w")
+
+        mu_vol_row = ctk.CTkFrame(mu_card, fg_color="transparent")
+        mu_vol_row.grid(row=1, column=0, columnspan=2, padx=14, pady=(0,10), sticky="w")
+        ctk.CTkLabel(mu_vol_row, text="🔉  Âm lượng nhạc nền:",
+                     font=ctk.CTkFont(size=11)).pack(side="left", padx=(0,8))
+        self._s3_music_vol = tk.IntVar(value=8)
+        self._s3_music_vol_lbl = ctk.CTkLabel(mu_vol_row, text="8%", width=48,
+                                               font=ctk.CTkFont(size=11, weight="bold"))
+        self._s3_music_vol_lbl.pack(side="right")
+        ctk.CTkSlider(
+            mu_vol_row, from_=0, to=50, variable=self._s3_music_vol, width=200,
+            command=lambda v: self._s3_music_vol_lbl.configure(text=f"{int(v)}%"),
+        ).pack(side="left")
+
         # ── Render action card ────────────────────────────────────────────────
         ac_outer, act_card = self._card(scroll, "🎬  Xuất video")
-        ac_outer.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+        ac_outer.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
         act_card.grid_columnconfigure(1, weight=1)
 
         self._s3_render_btn = ctk.CTkButton(
@@ -1164,7 +1251,7 @@ class VideoTranslatorApp(ctk.CTk):
 
         # ── Preview card (hidden until render done) ───────────────────────────
         self._s3_preview_outer, self._s3_preview_card = self._card(scroll, "✅  Kết quả — Xem trước")
-        self._s3_preview_outer.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
+        self._s3_preview_outer.grid(row=4, column=0, sticky="ew", padx=6, pady=4)
         self._s3_preview_outer.grid_remove()
 
         prev_inner = ctk.CTkFrame(self._s3_preview_card, fg_color="transparent")
@@ -1199,12 +1286,40 @@ class VideoTranslatorApp(ctk.CTk):
 
         # ── Navigation ────────────────────────────────────────────────────────
         nav = ctk.CTkFrame(parent, fg_color="transparent")
-        nav.grid(row=2, column=0, sticky="ew", padx=10, pady=(4,10))
+        nav.grid(row=3, column=0, sticky="ew", padx=10, pady=(4,10))
         ctk.CTkButton(nav, text="← Bước 2", width=110, height=36,
                       fg_color=("gray65","gray35"), hover_color=("gray55","gray45"),
                       command=self._go_back).pack(side="left")
 
     # ── Step 3 logic ──────────────────────────────────────────────────────────
+
+    def _pick_logo(self):
+        path = filedialog.askopenfilename(
+            title="Chọn ảnh logo",
+            filetypes=[("Ảnh", "*.png *.jpg *.jpeg *.webp *.bmp"), ("Tất cả", "*.*")],
+        )
+        if path:
+            self._logo_path = path
+            self._logo_lbl.configure(text=f"  {os.path.basename(path)}")
+            self._logo_enabled.set(True)
+
+    def _s3_get_music_list(self):
+        from video_processor import _MUSIC_DIR, _MUSIC_EXTS
+        if not os.path.isdir(_MUSIC_DIR):
+            return []
+        return [f for f in os.listdir(_MUSIC_DIR)
+                if os.path.splitext(f)[1].lower() in _MUSIC_EXTS]
+
+    def _s3_toggle_music(self):
+        files = self._s3_get_music_list()
+        if not files:
+            self._s3_music_hint.configure(
+                text="Chưa có nhạc — thêm file vào thư mục music/",
+                text_color=("gray50","gray60"))
+        else:
+            self._s3_music_hint.configure(
+                text=f"{len(files)} bài — random mỗi lần xuất",
+                text_color=("gray50","gray60"))
 
     def _s3_select_style(self, name: str):
         self._s3_style_var.set(name)
@@ -1289,12 +1404,40 @@ class VideoTranslatorApp(ctk.CTk):
             if os.path.getsize(self._preview_wav) < 1024:
                 raise RuntimeError("File lồng tiếng bị trống (TTS thất bại). Kiểm tra internet hoặc thử lại.")
 
+            from video_processor import pick_random_music
+            music_path = None
+            music_vol  = 0.0
+            if getattr(self, '_s3_music_enabled', None) and self._s3_music_enabled.get():
+                music_path = pick_random_music()
+                music_vol  = self._s3_music_vol.get() / 100.0
+                if music_path:
+                    self._s3_stage(f"🎵  Nhạc nền: {os.path.basename(music_path)}", 0.50)
+
+            logo_path = None
+            logo_opacity = 0.30
+            logo_size = 120
+            if self._logo_enabled.get() and self._logo_path:
+                logo_path    = self._logo_path
+                logo_opacity = self._logo_opacity.get() / 100.0
+                logo_size    = self._logo_size.get()
+                if os.path.exists(logo_path):
+                    self._s3_stage(
+                        f"🔲  Logo: {os.path.basename(logo_path)} ({int(logo_opacity*100)}%)", 0.50)
+                else:
+                    logo_path = None
+                    self._s3_stage("⚠️  Không tìm thấy file logo, bỏ qua", 0.50)
+
             export_with_dubbing(
                 self.video_path, self._preview_wav, srt_tmp,
                 self._output_path,
                 original_volume=orig_vol,
-                dubbed_volume=dub_vol,           # BUG FIX 3
+                dubbed_volume=dub_vol,
                 font_size=font_sz, style_name=style_nm,
+                music_path=music_path,
+                music_volume=music_vol,
+                logo_path=logo_path,
+                logo_opacity=logo_opacity,
+                logo_size=logo_size,
                 progress_callback=_mix_cb)
 
             if os.path.exists(srt_tmp):
@@ -1494,6 +1637,12 @@ class VideoTranslatorApp(ctk.CTk):
             "dub_vol":        (self._s2_dub_vol.get()  / 100.0) if hasattr(self, '_s2_dub_vol')  else 1.0,
             "font_size":      self._s3_font_size.get() if hasattr(self, '_s3_font_size') else 9,
             "sub_style":      self._s3_style_var.get() if hasattr(self, '_s3_style_var') else "Mặc định",
+            "music_enabled":  self._s3_music_enabled.get() if hasattr(self, '_s3_music_enabled') else True,
+            "music_volume":   (self._s3_music_vol.get() / 100.0) if hasattr(self, '_s3_music_vol') else 0.08,
+            "logo_path":      self._logo_path,
+            "logo_enabled":   self._logo_enabled.get(),
+            "logo_opacity":   self._logo_opacity.get() / 100.0,
+            "logo_size":      self._logo_size.get(),
         }
         BatchWindow(self, settings)
 

@@ -282,7 +282,7 @@ def download_video(
 ) -> str:
     """
     Download best-quality video to output_dir.
-    Douyin/Kuaishou/RedNote → Playwright. Còn lại → yt-dlp.
+    Thứ tự ưu tiên: yt-dlp (với cookies) → Playwright (fallback cho Douyin/Kuaishou/RedNote).
     Returns absolute path of the downloaded MP4.
     """
     try:
@@ -290,9 +290,7 @@ def download_video(
     except ImportError:
         raise RuntimeError("Chưa cài yt-dlp.\nChạy lệnh:  pip install yt-dlp")
 
-    # Dùng Playwright cho các platform có anti-bot mạnh
-    if any(d in url.lower() for d in _PLAYWRIGHT_PLATFORMS):
-        return _playwright_download(url, output_dir, progress_callback)
+    is_chinese_platform = any(d in url.lower() for d in _PLAYWRIGHT_PLATFORMS)
 
     os.makedirs(output_dir, exist_ok=True)
     result_path: list[str] = []
@@ -353,6 +351,7 @@ def download_video(
     attempts.append(("none", base_opts))
 
     last_err = None
+    ydl_ok = False
     for attempt_type, ydl_opts in attempts:
         if progress_callback:
             labels = {"browser": "Đang dùng cookies từ browser...",
@@ -363,21 +362,26 @@ def download_video(
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info     = ydl.extract_info(url, download=True)
                 prepared = ydl.prepare_filename(info)
+            ydl_ok = True
             break  # thành công
         except Exception as e:
             last_err = e
             err_str  = _strip_ansi(str(e)).lower()
-            if any(k in err_str for k in ("cookies", "login", "sign in", "fresh", "could not copy", "database")):
+            if any(k in err_str for k in ("cookies", "login", "sign in", "fresh", "could not copy", "database", "not found", "unavailable", "dpapi", "decrypt")):
                 continue  # thử cách tiếp theo
             raise RuntimeError(f"Lỗi tải video: {_strip_ansi(str(e))[:300]}") from e
-    else:
+
+    if not ydl_ok:
+        # yt-dlp thất bại → thử Playwright nếu là Douyin/Kuaishou/RedNote
+        if is_chinese_platform:
+            if progress_callback:
+                progress_callback("yt-dlp thất bại, thử Playwright...", 0.02)
+            return _playwright_download(url, output_dir, progress_callback)
         raise RuntimeError(
-            "Không tải được video — Douyin yêu cầu cookies hợp lệ.\n\n"
-            "Cách nhanh nhất:\n"
-            "1. Mở Edge → vào www.douyin.com → chờ load xong\n"
-            "2. Đóng Edge hoàn toàn\n"
-            "3. Thử tải lại (app sẽ đọc cookies từ Edge)\n\n"
-            "Hoặc dùng link TikTok/YouTube thay thế.\n\n"
+            "Không tải được video.\n\n"
+            "Thử:\n"
+            "1. Kiểm tra link còn hoạt động không\n"
+            "2. Đăng nhập Douyin trên Chrome/Edge rồi thử lại\n"
             f"Lỗi: {_strip_ansi(str(last_err))[:200]}"
         )
 

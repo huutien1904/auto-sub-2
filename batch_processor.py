@@ -31,6 +31,7 @@ ST_ERROR       = "lỗi"
 COL_LINK   = 1   # A
 COL_STATUS = 2   # B
 COL_ERROR  = 3   # C
+COL_OUTPUT = 4   # D — đường dẫn video hoàn thành
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -56,12 +57,26 @@ class SheetClient:
         """Ghi một ô (1-indexed)."""
         self._ws.update_cell(row, col, value)
 
+    def write_hyperlink(self, row: int, col: int, path: str, label: str = "📁 Mở video") -> None:
+        """Ghi đường dẫn file dưới dạng hyperlink có thể bấm được."""
+        from urllib.parse import quote
+        # Chuyển Windows path → file URI, encode ký tự đặc biệt/tiếng Việt
+        forward = path.replace("\\", "/")
+        encoded = quote(forward, safe="/:@")
+        uri = "file:///" + encoded.lstrip("/")
+        # Escape dấu nháy kép trong label
+        safe_label = label.replace('"', "'")[:80]
+        formula = f'=HYPERLINK("{uri}","{safe_label}")'
+        col_letter = chr(ord("A") + col - 1)
+        cell = f"{col_letter}{row}"
+        self._ws.update([[formula]], cell, value_input_option="USER_ENTERED")
+
     def ensure_header(self) -> None:
         """Đảm bảo hàng 1 có header đúng."""
         rows = self.read_all()
-        headers = ["Link video", "Trạng thái", "Lý do lỗi"]
-        if not rows or rows[0][:3] != headers:
-            self._ws.update("A1:C1", [headers])
+        headers = ["Link video", "Trạng thái", "Lý do lỗi", "Video hoàn thành"]
+        if not rows or rows[0][:4] != headers:
+            self._ws.update("A1:D1", [headers])
 
 
 def _build_title_from_entries(entries, max_len: int = 100) -> str:
@@ -178,7 +193,7 @@ class BatchProcessor:
         settings: Dict,
         log_cb:        Optional[Callable[[str], None]]           = None,
         progress_cb:   Optional[Callable[[int, int], None]]      = None,
-        row_update_cb: Optional[Callable[[int, str, str], None]] = None,
+        row_update_cb: Optional[Callable[[int, str, str, str], None]] = None,
     ):
         self.json_path     = json_path
         self.sheet_url     = sheet_url
@@ -311,12 +326,36 @@ class BatchProcessor:
         self.log_cb(f"  📝  Tiêu đề: {safe_name}")
         out_mp4 = os.path.join(self.output_dir, f"{safe_name}.mp4")
 
+        from video_processor import pick_random_music
+        music_path = None
+        music_vol  = 0.0
+        if self.settings.get("music_enabled", True):
+            music_path = pick_random_music()
+            music_vol  = self.settings.get("music_volume", 0.12)
+            if music_path:
+                self.log_cb(f"  🎵  Nhạc nền: {os.path.basename(music_path)}")
+
+        logo_path    = None
+        logo_opacity = 0.5
+        logo_size    = 150
+        if self.settings.get("logo_enabled") and self.settings.get("logo_path"):
+            logo_path    = self.settings["logo_path"]
+            logo_opacity = self.settings.get("logo_opacity", 0.5)
+            logo_size    = self.settings.get("logo_size", 150)
+            if logo_path:
+                self.log_cb(f"  🔲  Logo: {os.path.basename(logo_path)}")
+
         export_with_dubbing(
             video, dubbed, srt_tmp, out_mp4,
             original_volume=self.settings.get("orig_vol", 0.05),
             dubbed_volume=self.settings.get("dub_vol", 1.0),
             font_size=self.settings.get("font_size", 9),
             style_name=self.settings.get("sub_style", DEFAULT_STYLE),
+            music_path=music_path,
+            music_volume=music_vol,
+            logo_path=logo_path,
+            logo_opacity=logo_opacity,
+            logo_size=logo_size,
             progress_callback=lambda m, p: self.log_cb(f"  {m}"),
         )
 
@@ -328,6 +367,13 @@ class BatchProcessor:
 
         self.log_cb(f"  ✅  Lưu: {os.path.basename(out_mp4)}")
         self._set(row_num, ST_SUCCESS)
+        # Ghi đường dẫn video hoàn thành vào cột D (có thể bấm mở)
+        try:
+            self._client.write_hyperlink(row_num, COL_OUTPUT, out_mp4,
+                                         label=os.path.basename(out_mp4))
+        except Exception:
+            self._client.write_cell(row_num, COL_OUTPUT, out_mp4)
+        self.row_update_cb(row_num, ST_SUCCESS, "", out_mp4)
 
     def _set(self, row: int, status: str, error: str = "") -> None:
         self._client.write_cell(row, COL_STATUS, status)
@@ -335,5 +381,5 @@ class BatchProcessor:
             self._client.write_cell(row, COL_ERROR, error)
         elif status == ST_SUCCESS:
             self._client.write_cell(row, COL_ERROR, "")
-        self.row_update_cb(row, status, error)
+        self.row_update_cb(row, status, error, "")
         time.sleep(0.2)
