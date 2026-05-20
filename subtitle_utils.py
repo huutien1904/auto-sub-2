@@ -64,10 +64,17 @@ def write_srt(entries: List[SubtitleEntry], use_translation: bool = True) -> str
 
 def whisper_to_entries(segments: list) -> List[SubtitleEntry]:
     entries = []
+    if not segments:
+        return entries
     for i, seg in enumerate(segments, 1):
-        start = _seconds_to_srt_time(seg["start"])
-        end = _seconds_to_srt_time(seg["end"])
-        text = seg["text"].strip()
+        if seg is None:
+            continue
+        try:
+            start = _seconds_to_srt_time(seg.get("start", 0) or 0)
+            end   = _seconds_to_srt_time(seg.get("end",   0) or 0)
+            text  = (seg.get("text") or "").strip()
+        except Exception:
+            continue
         if text:
             entries.append(
                 SubtitleEntry(

@@ -214,6 +214,8 @@ def export_with_dubbing(
         cmd += [
             "-filter_complex", filter_complex,
             *map_args,
+            "-c:v", "libx264",   # ép H.264 — tương thích mọi thiết bị
+            "-c:a", "aac",
             "-preset", "fast",
             "-crf", "23",
             output_path,

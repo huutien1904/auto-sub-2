@@ -307,15 +307,11 @@ class VideoTranslatorApp(ctk.CTk):
     def _build_step1(self, parent: ctk.CTkFrame):
         parent.grid_rowconfigure(1, weight=1)
 
-        # ── Section header ────────────────────────────────────────────────────
-        hdr = ctk.CTkLabel(parent,
-                           text="Bước 1 — Nhập video & Trích xuất phụ đề",
-                           font=ctk.CTkFont(size=16, weight="bold"), anchor="w")
-        hdr.grid(row=0, column=0, padx=20, pady=(16, 4), sticky="ew")
+        parent.grid_rowconfigure(0, weight=1)
 
         # ── Scrollable content ────────────────────────────────────────────────
         scroll = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=10, pady=4)
         scroll.grid_columnconfigure(0, weight=1)
 
         # ── A: Video input card ───────────────────────────────────────────────
@@ -1109,14 +1105,10 @@ class VideoTranslatorApp(ctk.CTk):
     # =========================================================================
 
     def _build_step3(self, parent: ctk.CTkFrame):
-        parent.grid_rowconfigure(1, weight=1)
-
-        ctk.CTkLabel(parent, text="Bước 3 — Kết xuất & Xem trước",
-                     font=ctk.CTkFont(size=16, weight="bold"), anchor="w"
-                     ).grid(row=0, column=0, padx=20, pady=(12,4), sticky="ew")
+        parent.grid_rowconfigure(0, weight=1)
 
         scroll = ctk.CTkScrollableFrame(parent, fg_color="transparent")
-        scroll.grid(row=1, column=0, sticky="nsew", padx=10, pady=4)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=10, pady=4)
         scroll.grid_columnconfigure(0, weight=1)
 
         # ── Quick preview card ────────────────────────────────────────────────
@@ -1286,7 +1278,7 @@ class VideoTranslatorApp(ctk.CTk):
 
         # ── Navigation ────────────────────────────────────────────────────────
         nav = ctk.CTkFrame(parent, fg_color="transparent")
-        nav.grid(row=3, column=0, sticky="ew", padx=10, pady=(4,10))
+        nav.grid(row=1, column=0, sticky="ew", padx=10, pady=(4,10))
         ctk.CTkButton(nav, text="← Bước 2", width=110, height=36,
                       fg_color=("gray65","gray35"), hover_color=("gray55","gray45"),
                       command=self._go_back).pack(side="left")
