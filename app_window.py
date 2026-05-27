@@ -19,6 +19,7 @@ from api_settings_dialog import ApiSettingsDialog
 from batch_window import BatchWindow
 from downloader import download_video, detect_platform, extract_url, save_cookies_file, _find_saved_cookies
 from dubbing import TTS_PROVIDERS, PROVIDER_VOICES, create_dubbed_track
+from player_window import PlayerWindow, BlurRegion
 from preview_window import PreviewWindow
 from subtitle_styles import STYLES, DEFAULT_STYLE, build_ffmpeg_style
 from subtitle_utils import SubtitleEntry, parse_srt, whisper_to_entries, write_srt
@@ -185,6 +186,7 @@ class VideoTranslatorApp(ctk.CTk):
         self._step_done = [False, False, False]
         self._processing = False
         self._selected_row = -1
+        self._blur_regions: List[BlurRegion] = []
 
         self._build_ui()
         self.after(300, self._check_ffmpeg)
@@ -1114,34 +1116,58 @@ class VideoTranslatorApp(ctk.CTk):
         # ── Quick preview card ────────────────────────────────────────────────
         qp_outer, qp_card = self._card(scroll, "👁  Xem trước trước khi xuất")
         qp_outer.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
-        qp_card.grid_columnconfigure((0,1,2), weight=1)
+        qp_card.grid_columnconfigure((0, 1, 2), weight=1)
 
         ctk.CTkLabel(
             qp_card,
             text="Kiểm tra phụ đề và lồng tiếng trước khi bắt đầu xuất video.",
             font=ctk.CTkFont(size=11), text_color=("gray50","gray60"), anchor="w",
-        ).grid(row=0, column=0, columnspan=3, padx=12, pady=(8,6), sticky="ew")
+        ).grid(row=0, column=0, columnspan=3, padx=12, pady=(8, 4), sticky="ew")
 
+        # ── Main player button (full row) ─────────────────────────────────────
+        self._s3_player_btn = ctk.CTkButton(
+            qp_card,
+            text="▶  Xem trước video (sub + lồng tiếng) & Chọn vùng Blur",
+            height=44,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=("#1565C0", "#0D47A1"),
+            hover_color=("#0D47A1", "#082a60"),
+            command=self._open_player_window,
+        )
+        self._s3_player_btn.grid(row=1, column=0, columnspan=3,
+                                  padx=12, pady=(4, 4), sticky="ew")
+
+        # Blur counter label
+        self._s3_blur_lbl = ctk.CTkLabel(
+            qp_card,
+            text="Chưa có vùng blur nào được chọn.",
+            font=ctk.CTkFont(size=11),
+            text_color=("gray50", "gray60"), anchor="w",
+        )
+        self._s3_blur_lbl.grid(row=2, column=0, columnspan=3,
+                                padx=14, pady=(0, 4), sticky="w")
+
+        # ── Secondary buttons ─────────────────────────────────────────────────
         ctk.CTkButton(
-            qp_card, text="📝  Xem trước phụ đề",
-            height=38, font=ctk.CTkFont(size=12, weight="bold"),
+            qp_card, text="📝  Preview phụ đề (tĩnh)",
+            height=34, font=ctk.CTkFont(size=11),
             fg_color=("#00695C","#004D40"), hover_color=("#00796B","#00695C"),
             command=self._open_preview_window,
-        ).grid(row=1, column=0, padx=(12,4), pady=(0,12), sticky="ew")
+        ).grid(row=3, column=0, padx=(12, 4), pady=(0, 12), sticky="ew")
 
         ctk.CTkButton(
-            qp_card, text="🎙  Xem trước lồng tiếng",
-            height=38, font=ctk.CTkFont(size=12, weight="bold"),
+            qp_card, text="🎙  Preview lồng tiếng",
+            height=34, font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=("#6A1B9A","#4A148C"), hover_color=("#7B1FA2","#38006b"),
             command=self._open_preview_with_dub,
-        ).grid(row=1, column=1, padx=4, pady=(0,12), sticky="ew")
+        ).grid(row=3, column=1, padx=4, pady=(0, 12), sticky="ew")
 
         ctk.CTkButton(
-            qp_card, text="▶  Mở trong VLC",
-            height=38, font=ctk.CTkFont(size=12),
-            fg_color=("#1565C0","#0D47A1"), hover_color=("#0D47A1","#082a60"),
+            qp_card, text="▶  Mở VLC",
+            height=34, font=ctk.CTkFont(size=11),
+            fg_color=("gray60","gray30"), hover_color=("gray50","gray40"),
             command=self._open_vlc_with_subs,
-        ).grid(row=1, column=2, padx=(4,12), pady=(0,12), sticky="ew")
+        ).grid(row=3, column=2, padx=(4, 12), pady=(0, 12), sticky="ew")
 
         # ── Style card ────────────────────────────────────────────────────────
         sc_outer, style_card = self._card(scroll, "🎨  Kiểu hiển thị phụ đề")
@@ -1323,6 +1349,36 @@ class VideoTranslatorApp(ctk.CTk):
                 b.configure(fg_color=("gray72","gray28"), text_color=("gray10","gray90"),
                             font=ctk.CTkFont(size=10, weight="normal"))
 
+    def _open_player_window(self):
+        """Open the embedded video player with blur-region selector."""
+        if not self.video_path:
+            messagebox.showwarning("Chưa có video", "Hãy chọn video ở Bước 1!")
+            return
+
+        def _on_blur_save(regions):
+            self._blur_regions = regions
+            count = len(regions)
+            if count == 0:
+                self._s3_blur_lbl.configure(
+                    text="Chưa có vùng blur nào được chọn.",
+                    text_color=("gray50", "gray60"),
+                )
+            else:
+                self._s3_blur_lbl.configure(
+                    text=f"✅  {count} vùng blur đã được chọn — sẽ áp dụng khi xuất video.",
+                    text_color=("#2E7D32", "#4CAF50"),
+                )
+
+        tts = self._get_tts_settings() if hasattr(self, '_s2_voice_var') else {}
+        PlayerWindow(
+            self,
+            video_path=self.video_path,
+            entries=self.subtitle_entries or [],
+            dubbed_wav=self._preview_wav,
+            blur_regions=self._blur_regions,
+            on_save=_on_blur_save,
+        )
+
     def _s3_start_render(self):
         if not self.subtitle_entries:
             messagebox.showwarning("Thiếu phụ đề", "Hãy hoàn thành Bước 2 trước!")
@@ -1430,6 +1486,7 @@ class VideoTranslatorApp(ctk.CTk):
                 logo_path=logo_path,
                 logo_opacity=logo_opacity,
                 logo_size=logo_size,
+                blur_regions=self._blur_regions or None,
                 progress_callback=_mix_cb)
 
             if os.path.exists(srt_tmp):

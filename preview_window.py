@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 import customtkinter as ctk
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
-from subtitle_styles import STYLES, DEFAULT_STYLE, build_ffmpeg_style, get_canvas_colors
+from subtitle_styles import STYLES, DEFAULT_STYLE, build_ffmpeg_style, get_canvas_colors, get_use_blur
 
 if TYPE_CHECKING:
     from subtitle_utils import SubtitleEntry
@@ -402,10 +402,11 @@ class PreviewWindow(ctk.CTkToplevel):
         bg.paste(img, (ox, oy))
 
         # Draw subtitle overlay
-        sample = self._get_sample_text()
-        style  = self._current_style.get()
+        sample   = self._get_sample_text()
+        style    = self._current_style.get()
         txt_col, bg_hex, out_col = get_canvas_colors(style)
-        bg = self._draw_subtitle_on_frame(bg, sample, txt_col, bg_hex, out_col)
+        use_blur = get_use_blur(style)
+        bg = self._draw_subtitle_on_frame(bg, sample, txt_col, bg_hex, out_col, use_blur)
 
         self._canvas_img = ImageTk.PhotoImage(bg)
         self._canvas.delete("all")
@@ -422,6 +423,7 @@ class PreviewWindow(ctk.CTkToplevel):
     def _draw_subtitle_on_frame(
         self, img: Image.Image,
         text: str, txt_col: str, bg_hex: str, out_col: str,
+        use_blur: bool = True,
     ) -> Image.Image:
         draw  = ImageDraw.Draw(img, "RGBA")
         w, h  = img.size
@@ -440,14 +442,29 @@ class PreviewWindow(ctk.CTkToplevel):
         x = sx - tw // 2
         y = sy - th // 2
 
-        # Draw background box
-        if bg_hex not in ("transparent", ""):
-            pad = 6
-            col = self._parse_color(bg_hex)
-            draw.rounded_rectangle(
-                [x - pad, y - pad, x + tw + pad, y + th + pad],
-                radius=4, fill=col,
-            )
+        pad = 8
+        if use_blur:
+            # Frosted-glass blur background
+            bx0 = max(0, x - pad)
+            by0 = max(0, y - pad)
+            bx1 = min(w, x + tw + pad)
+            by1 = min(h, y + th + pad)
+            if bx1 > bx0 and by1 > by0:
+                from PIL import ImageFilter
+                region = img.crop((bx0, by0, bx1, by1)).convert("RGBA")
+                blurred = region.filter(ImageFilter.GaussianBlur(radius=12))
+                dark = Image.new("RGBA", blurred.size, (0, 0, 0, 120))
+                blurred = Image.alpha_composite(blurred, dark)
+                img.paste(blurred.convert("RGB"), (bx0, by0))
+                draw = ImageDraw.Draw(img, "RGBA")
+        else:
+            # Solid color background (kiểu cũ)
+            if bg_hex not in ("transparent", ""):
+                col = self._parse_color(bg_hex)
+                draw.rounded_rectangle(
+                    [x - pad, y - pad, x + tw + pad, y + th + pad],
+                    radius=4, fill=col,
+                )
 
         # Draw outline
         if out_col and out_col not in ("transparent",):

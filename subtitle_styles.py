@@ -19,6 +19,16 @@ STYLES: Dict[str, dict] = {
         "Outline": 8, "Shadow": 0,       # Outline=8 tạo padding trong bubble
         "_canvas": ("black", "white", "white"),
     },
+    "Nền Đặc": {
+        "FontName": "Arial", "Bold": 0, "Italic": -1,
+        "PrimaryColour": "&H00000000",
+        "OutlineColour": "&H00FFFFFF",
+        "BackColour":    "&H00FFFFFF",
+        "BorderStyle": 3,
+        "Outline": 8, "Shadow": 0,
+        "_canvas": ("black", "white", "white"),
+        "_blur_bg": False,
+    },
     "Karaoke Vàng": {
         "FontName": "Arial Black", "Bold": 1, "Italic": -1,
         "PrimaryColour": "&H0000FFFF", "OutlineColour": "&H000000AA",
@@ -142,3 +152,8 @@ def build_ffmpeg_style(style_name: str, font_size: int = 9,
 def get_canvas_colors(style_name: str) -> CanvasPreview:
     s = STYLES.get(style_name, STYLES[DEFAULT_STYLE])
     return s.get("_canvas", ("white", "#00000088", "black"))
+
+
+def get_use_blur(style_name: str) -> bool:
+    s = STYLES.get(style_name, STYLES[DEFAULT_STYLE])
+    return s.get("_blur_bg", True)

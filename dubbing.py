@@ -205,29 +205,43 @@ def create_dubbed_track(
 
     backend = _BACKENDS.get(provider, _tts_edge)
     total = len(entries)
-    generated: list[tuple] = []   # [(entry, path_or_None), ...]
+    generated: list[tuple] = [None] * total  # type: ignore
 
-    # ── Step 1: generate raw TTS clips ───────────────────────────────────────
-    for i, entry in enumerate(entries):
+    # ── Step 1: generate raw TTS clips (parallel) ─────────────────────────────
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    done_count = 0
+    lock = threading.Lock()
+
+    def _generate_one(idx: int, entry):
+        nonlocal done_count
         text = (entry.translated_text or entry.original_text).strip()
         if not text:
-            generated.append((entry, None))
-            continue
-
+            return idx, entry, None
         raw_path = tempfile.mktemp(suffix=".mp3")
         try:
             backend(text, voice, raw_path, api_key=api_key, speed_pct=speed_pct)
-            generated.append((entry, raw_path))
+            return idx, entry, raw_path
         except Exception as exc:
-            print(f"[TTS] Bỏ qua dòng {i+1}: {exc}")
-            generated.append((entry, None))
+            print(f"[TTS] Bỏ qua dòng {idx+1}: {exc}")
+            return idx, entry, None
 
-        if progress_callback:
-            progress_callback(
-                f"Đang tạo giọng đọc... ({i+1}/{total})",
-                (i + 1) / total * 0.75,
-            )
-        time.sleep(0.1)
+    # FPT.AI rate-limits heavily → keep sequential; others can run in parallel
+    max_workers = 1 if provider == "fptai" else 4
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_generate_one, i, e): i for i, e in enumerate(entries)}
+        for fut in as_completed(futures):
+            idx, entry, raw_path = fut.result()
+            generated[idx] = (entry, raw_path)
+            with lock:
+                done_count += 1
+            if progress_callback:
+                progress_callback(
+                    f"Đang tạo giọng đọc... ({done_count}/{total})",
+                    done_count / total * 0.75,
+                )
 
     # ── Step 2 & 3: adjust speed then overlay ────────────────────────────────
     if progress_callback:
