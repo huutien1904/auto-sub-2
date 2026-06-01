@@ -14,19 +14,30 @@ def translate_entries(
     provider: str = "google",
     api_key: str = "",
     model: str = "",
+    domain: str = "",
     progress_callback: Optional[Callable[[str, float], None]] = None,
 ) -> None:
     """Translate subtitle entries in-place (modifies translated_text)."""
     import glossary as _gl
+    from domain_presets import get_terms as _domain_terms, get_context as _domain_ctx
 
-    # Áp dụng glossary trước khi dịch
-    terms = _gl.load()
-    reverse_maps = _gl.apply_to_entries(entries, terms) if terms else []
+    # Gộp glossary người dùng + thuật ngữ domain
+    user_terms   = _gl.load()
+    domain_terms = _domain_terms(domain) if domain else []
+    # Domain terms thêm vào trước, user terms có thể ghi đè
+    user_sources = {s.lower() for s, _ in user_terms}
+    merged_terms = [t for t in domain_terms if t[0].lower() not in user_sources] + user_terms
+
+    reverse_maps = _gl.apply_to_entries(entries, merged_terms) if merged_terms else []
+
+    domain_context = _domain_ctx(domain) if domain else ""
 
     if provider == "openai":
-        _translate_openai(entries, source_lang, target_lang, api_key, model, progress_callback)
+        _translate_openai(entries, source_lang, target_lang, api_key, model,
+                          progress_callback, domain_context)
     elif provider == "claude":
-        _translate_claude(entries, source_lang, target_lang, api_key, model, progress_callback)
+        _translate_claude(entries, source_lang, target_lang, api_key, model,
+                          progress_callback, domain_context)
     else:
         _translate_google(entries, source_lang, target_lang, progress_callback)
 
@@ -63,20 +74,8 @@ def _translate_google(entries, source_lang, target_lang, progress_callback):
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
-def _translate_openai(entries, source_lang, target_lang, api_key, model, progress_callback):
-    try:
-        from openai import OpenAI
-    except ImportError:
-        raise RuntimeError(
-            "Chưa cài thư viện openai.\nChạy lệnh: pip install openai"
-        )
-
-    client = OpenAI(api_key=api_key)
-    model = model or "gpt-4o-mini"
-    total = len(entries)
-    BATCH = 25
-
-    system_prompt = (
+def _build_system_prompt(domain_context: str = "") -> str:
+    base = (
         "Bạn là một chuyên gia dịch thuật và biên kịch xuất sắc, chuyên xử lý phụ đề cho video ngắn "
         "(TikTok, Reels, Shorts). Nhiệm vụ của bạn là dịch danh sách phụ đề từ ngôn ngữ gốc sang Tiếng Việt.\n\n"
         "Hãy tuân thủ nghiêm ngặt các quy tắc sau:\n"
@@ -89,6 +88,26 @@ def _translate_openai(entries, source_lang, target_lang, api_key, model, progres
         "nếu dịch sang tiếng Việt nghe bị sượng.\n"
         "5. Giữ nguyên định dạng số thứ tự và cấu trúc dòng để không làm lệch phụ đề."
     )
+    if domain_context:
+        base += f"\n\nNGỮ CẢNH ĐẶC BIỆT: {domain_context}"
+    return base
+
+
+def _translate_openai(entries, source_lang, target_lang, api_key, model,
+                      progress_callback, domain_context: str = ""):
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise RuntimeError(
+            "Chưa cài thư viện openai.\nChạy lệnh: pip install openai"
+        )
+
+    client = OpenAI(api_key=api_key)
+    model = model or "gpt-4o-mini"
+    total = len(entries)
+    BATCH = 25
+
+    system_prompt = _build_system_prompt(domain_context)
 
     for batch_start in range(0, total, BATCH):
         batch = entries[batch_start : batch_start + BATCH]
@@ -130,7 +149,8 @@ def _translate_openai(entries, source_lang, target_lang, api_key, model, progres
 
 # ── Anthropic Claude ──────────────────────────────────────────────────────────
 
-def _translate_claude(entries, source_lang, target_lang, api_key, model, progress_callback):
+def _translate_claude(entries, source_lang, target_lang, api_key, model,
+                      progress_callback, domain_context: str = ""):
     try:
         import anthropic
     except ImportError:
@@ -143,19 +163,7 @@ def _translate_claude(entries, source_lang, target_lang, api_key, model, progres
     total = len(entries)
     BATCH = 25
 
-    system_prompt = (
-        "Bạn là một chuyên gia dịch thuật và biên kịch xuất sắc, chuyên xử lý phụ đề cho video ngắn "
-        "(TikTok, Reels, Shorts). Nhiệm vụ của bạn là dịch danh sách phụ đề từ ngôn ngữ gốc sang Tiếng Việt.\n\n"
-        "Hãy tuân thủ nghiêm ngặt các quy tắc sau:\n"
-        "1. KHÔNG dịch word-by-word. Hãy dịch thoát ý, tự nhiên, mượt mà theo đúng ngữ cảnh "
-        "văn phong nói của đời sống hoặc giới trẻ Việt Nam.\n"
-        "2. Bản dịch phải ngắn gọn, súc tích để người nghe kịp hiểu trong video ngắn.\n"
-        "3. Chú ý ngữ cảnh của các đại từ nhân xưng (Tôi - Bạn, Anh - Em, Anh ấy, Cô ấy...) "
-        "sao cho đồng nhất từ đầu đến cuối video dựa vào nội dung câu thoại.\n"
-        "4. Giữ nguyên các thuật ngữ chuyên ngành, tên riêng, hoặc từ mượn phổ biến "
-        "nếu dịch sang tiếng Việt nghe bị sượng.\n"
-        "5. Giữ nguyên định dạng số thứ tự và cấu trúc dòng để không làm lệch phụ đề."
-    )
+    system_prompt = _build_system_prompt(domain_context)
 
     for batch_start in range(0, total, BATCH):
         batch = entries[batch_start : batch_start + BATCH]

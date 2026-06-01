@@ -59,6 +59,102 @@ def pick_random_music() -> Optional[str]:
     return random.choice(files) if files else None
 
 
+def _run_ffmpeg(
+    cmd: list,
+    stderr_callback: Optional[Callable[[str], None]] = None,
+) -> tuple:
+    """
+    Chạy FFmpeg. Nếu có stderr_callback, stream từng dòng stderr ra callback
+    (để hiển thị tiến độ real-time). Trả về (returncode, stderr_text).
+    """
+    import threading
+
+    if stderr_callback is None:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+        return result.returncode, result.stderr
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+
+    stderr_lines: list = []
+
+    def _read():
+        for line in proc.stderr:
+            line = line.rstrip()
+            if line:
+                stderr_lines.append(line)
+                stderr_callback(line)
+
+    t = threading.Thread(target=_read, daemon=True)
+    t.start()
+    proc.wait()
+    t.join()
+    return proc.returncode, "\n".join(stderr_lines)
+
+
+def build_preview_audio(
+    video_path: str,
+    dubbed_wav: Optional[str] = None,
+    music_path: Optional[str] = None,
+    orig_vol: float = 0.10,
+    dub_vol: float = 1.0,
+    music_vol: float = 0.08,
+) -> Optional[str]:
+    """
+    Mix video original audio + dubbed WAV + background music into a temp WAV.
+    Used for in-app preview (PlayerWindow). Returns WAV path or None on error.
+    """
+    out = tempfile.mktemp(suffix="_pmix.wav")
+
+    has_dub   = bool(dubbed_wav and os.path.exists(dubbed_wav))
+    has_music = bool(music_path and os.path.exists(music_path))
+
+    # Khi không có lồng tiếng lẫn nhạc nền → phát tiếng gốc full volume
+    actual_orig_vol = orig_vol if has_dub else 1.0
+
+    try:
+        if not has_dub and not has_music:
+            # Đường đơn giản: chỉ chiết âm gốc, không cần amix
+            af = f"volume={actual_orig_vol:.3f}"
+            cmd = ["ffmpeg", "-y", "-i", video_path, "-vn", "-af", af, out]
+        else:
+            inputs: list = ["-i", video_path]
+            vol_parts: list = [f"[0:a]volume={actual_orig_vol:.3f}[a0]"]
+            mix_labels: list = ["[a0]"]
+            n = 1
+
+            if has_dub:
+                inputs += ["-i", dubbed_wav]
+                vol_parts.append(f"[{n}:a]volume={dub_vol:.3f}[a{n}]")
+                mix_labels.append(f"[a{n}]")
+                n += 1
+
+            if has_music:
+                inputs += ["-stream_loop", "-1", "-i", music_path]
+                vol_parts.append(f"[{n}:a]volume={music_vol:.3f}[a{n}]")
+                mix_labels.append(f"[a{n}]")
+                n += 1
+
+            mix_in = "".join(mix_labels)
+            fc = (
+                ";".join(vol_parts)
+                + f";{mix_in}amix=inputs={n}:duration=first:normalize=0:dropout_transition=0[out]"
+            )
+            cmd = ["ffmpeg", "-y", *inputs, "-filter_complex", fc, "-map", "[out]", out]
+
+        r = subprocess.run(cmd, capture_output=True, timeout=180)
+        if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 100:
+            return out
+    except Exception:
+        pass
+    return None
+
+
 def check_ffmpeg() -> bool:
     try:
         result = subprocess.run(
@@ -164,6 +260,7 @@ def export_with_dubbing(
     logo_size: int = 150,
     blur_regions: Optional[list] = None,
     progress_callback: Optional[Callable[[str, float], None]] = None,
+    stderr_callback: Optional[Callable[[str], None]] = None,
 ) -> None:
     """
     Render video with:
@@ -202,7 +299,7 @@ def export_with_dubbing(
             audio_filter = (
                 f"[0:a]volume={original_volume:.2f}[orig];"
                 f"[1:a]volume={dubbed_volume:.2f}[dub];"
-                "[orig][dub]amix=inputs=2:duration=longest:normalize=0:dropout_transition=0[audio_out]"
+                "[orig][dub]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[audio_out]"
             )
 
         # ── Video filter chain ────────────────────────────────────────────────
@@ -262,18 +359,23 @@ def export_with_dubbing(
         if use_logo:
             cmd += ["-loop", "1", "-framerate", "25", "-i", logo_path]
         encode_args = _best_encoder()
+
+        # Hard-cap output theo thời lượng thực tế của video (tránh bug metadata sai)
+        actual_dur = get_video_duration(video_path)
+        t_args = ["-t", f"{actual_dur:.3f}"] if actual_dur > 0 else []
+
         cmd += [
             "-filter_complex", filter_complex,
             *map_args,
             *encode_args,
             "-c:a", "aac",
+            *t_args,
             output_path,
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg lỗi lồng tiếng:\n{result.stderr[-800:]}")
+        returncode, stderr_out = _run_ffmpeg(cmd, stderr_callback)
+        if returncode != 0:
+            raise RuntimeError(f"FFmpeg lỗi lồng tiếng:\n{stderr_out[-800:]}")
 
         if progress_callback:
             progress_callback("✅  Xuất video lồng tiếng thành công!", 1.0)
@@ -284,7 +386,28 @@ def export_with_dubbing(
 
 
 def get_video_duration(video_path: str) -> float:
-    """Return video duration in seconds using FFprobe."""
+    """
+    Return video duration in seconds.
+    Dùng OpenCV (frame count / fps) làm nguồn chính xác,
+    ffprobe làm fallback — vì một số video TikTok/Douyin có metadata
+    container sai (báo 28 phút nhưng thực tế 7 giây).
+    """
+    # ── OpenCV: đếm frame thực tế ─────────────────────────────────────────────
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        fps    = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        cap.release()
+        if frames > 0 and fps > 0:
+            cv_dur = frames / fps
+            # Nếu OpenCV cho kết quả hợp lý (> 0 và < 24 giờ), dùng nó
+            if 0 < cv_dur < 86400:
+                return cv_dur
+    except Exception:
+        pass
+
+    # ── Fallback: ffprobe container metadata ──────────────────────────────────
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",

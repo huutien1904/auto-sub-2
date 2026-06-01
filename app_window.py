@@ -25,7 +25,7 @@ from subtitle_styles import STYLES, DEFAULT_STYLE, build_ffmpeg_style
 from subtitle_utils import SubtitleEntry, parse_srt, whisper_to_entries, write_srt
 from transcriber import check_ffmpeg
 from translator import translate_entries
-from video_processor import burn_subtitles, export_with_dubbing, get_video_duration
+from video_processor import burn_subtitles, export_with_dubbing, get_video_duration, pick_random_music
 
 # ── Language / model maps ─────────────────────────────────────────────────────
 
@@ -210,11 +210,18 @@ class VideoTranslatorApp(ctk.CTk):
                      text_color="white").grid(row=0, column=0, padx=20, pady=10, sticky="w")
 
         ctk.CTkButton(
-            title_bar, text="📊  Batch",
-            width=100, height=30,
+            title_bar, text="🗂️  Hàng Loạt từ thư mục",
+            width=180, height=30,
             fg_color=("#00695C","#004D40"), hover_color=("#00796B","#00695C"),
-            command=self._open_batch,
+            command=self._open_local_batch,
         ).grid(row=0, column=2, padx=(0, 6), pady=10)
+
+        ctk.CTkButton(
+            title_bar, text="📊  Batch Sheets",
+            width=130, height=30,
+            fg_color=("#37474F","#263238"), hover_color=("#455A64","#37474F"),
+            command=self._open_batch,
+        ).grid(row=0, column=3, padx=(0, 6), pady=10)
 
         self._api_btn = ctk.CTkButton(
             title_bar, text="⚙️  Cài đặt API",
@@ -222,7 +229,7 @@ class VideoTranslatorApp(ctk.CTk):
             fg_color=("#7B1FA2","#4A148C"), hover_color=("#6A1B9A","#38006b"),
             command=self._open_api_settings,
         )
-        self._api_btn.grid(row=0, column=3, padx=10, pady=10)
+        self._api_btn.grid(row=0, column=4, padx=10, pady=10)
 
         # ── Step indicator ────────────────────────────────────────────────────
         self._step_indicator = self._build_step_indicator()
@@ -389,18 +396,26 @@ class VideoTranslatorApp(ctk.CTk):
         cfg_outer.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
         cfg_card.grid_columnconfigure(1, weight=1)
 
+        from domain_presets import domain_labels as _dl
         r = 0
         for label, attr, values, default in [
-            ("Ngôn ngữ gốc:",           "_s1_lang_var",  list(LANGUAGES.keys()),      "Tiếng Trung (Giản thể)"),
-            ("Mô hình Whisper (STT):",  "_s1_model_var", list(WHISPER_MODELS.keys()), "small — cân bằng hơn"),
+            ("Ngôn ngữ gốc:",           "_s1_lang_var",   list(LANGUAGES.keys()),      "Tiếng Trung (Giản thể)"),
+            ("Mô hình Whisper (STT):",  "_s1_model_var",  list(WHISPER_MODELS.keys()), "small — cân bằng hơn"),
+            ("Lĩnh vực nội dung:",      "_s1_domain_var", _dl(),                       "Chung (không chọn)"),
         ]:
             ctk.CTkLabel(cfg_card, text=label, font=ctk.CTkFont(weight="bold"),
-                         width=120).grid(row=r, column=0, padx=12, pady=8, sticky="w")
+                         width=130).grid(row=r, column=0, padx=12, pady=8, sticky="w")
             var = ctk.StringVar(value=default)
             setattr(self, attr, var)
             ctk.CTkOptionMenu(cfg_card, variable=var, values=values, width=280
                               ).grid(row=r, column=1, padx=6, pady=8, sticky="w")
             r += 1
+
+        ctk.CTkLabel(
+            cfg_card,
+            text="💡 Chọn lĩnh vực để tự động dùng đúng thuật ngữ chuyên ngành khi dịch",
+            font=ctk.CTkFont(size=10), text_color=("gray50", "gray55"), anchor="w",
+        ).grid(row=r, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="w")
 
         # ── D: Logo card ──────────────────────────────────────────────────────
         lo_outer, lo_card = self._card(scroll, "🔲  Logo / Watermark")
@@ -947,9 +962,10 @@ class VideoTranslatorApp(ctk.CTk):
                 "openai_api_key" if provider == "openai" else "anthropic_api_key", "")
             ai_model   = self._api_cfg.get(
                 "openai_model" if provider == "openai" else "anthropic_model", "")
+            domain     = getattr(self, "_s1_domain_var", None)
+            domain     = domain.get() if domain else "Chung (không chọn)"
 
             def _cb(msg, prog):
-                # Find latest translated entry to show in bubble
                 last = next(
                     (e for e in reversed(self.subtitle_entries) if e.translated_text),
                     None,
@@ -969,6 +985,7 @@ class VideoTranslatorApp(ctk.CTk):
             translate_entries(self.subtitle_entries, source_lang=trans_lang,
                               target_lang="vi", provider=provider,
                               api_key=api_key, model=ai_model,
+                              domain=domain,
                               progress_callback=_cb)
 
             self._step_done[1] = True
@@ -1369,12 +1386,25 @@ class VideoTranslatorApp(ctk.CTk):
                     text_color=("#2E7D32", "#4CAF50"),
                 )
 
-        tts = self._get_tts_settings() if hasattr(self, '_s2_voice_var') else {}
+        music_path = None
+        music_vol  = 0.08
+        if getattr(self, '_s3_music_enabled', None) and self._s3_music_enabled.get():
+            music_path = pick_random_music()
+            if hasattr(self, '_s3_music_vol'):
+                music_vol = self._s3_music_vol.get() / 100.0
+        orig_vol = self._s2_orig_vol.get() / 100.0 if hasattr(self, '_s2_orig_vol') else 0.10
+        dub_vol  = self._s2_dub_vol.get()  / 100.0 if hasattr(self, '_s2_dub_vol')  else 1.0
+
         PlayerWindow(
             self,
             video_path=self.video_path,
             entries=self.subtitle_entries or [],
             dubbed_wav=self._preview_wav,
+            music_path=music_path,
+            orig_vol=orig_vol,
+            dub_vol=dub_vol,
+            music_vol=music_vol,
+            tts_settings=self._get_tts_settings() if hasattr(self, '_s2_voice_var') else {},
             blur_regions=self._blur_regions,
             on_save=_on_blur_save,
         )
@@ -1578,12 +1608,24 @@ class VideoTranslatorApp(ctk.CTk):
         if not self.video_path:
             messagebox.showwarning("Chưa có video", "Hãy chọn video ở Bước 1!")
             return
+        music_path = None
+        music_vol  = 0.08
+        if getattr(self, '_s3_music_enabled', None) and self._s3_music_enabled.get():
+            music_path = pick_random_music()
+            if hasattr(self, '_s3_music_vol'):
+                music_vol = self._s3_music_vol.get() / 100.0
+        orig_vol = self._s2_orig_vol.get() / 100.0 if hasattr(self, '_s2_orig_vol') else 0.10
+        dub_vol  = self._s2_dub_vol.get()  / 100.0 if hasattr(self, '_s2_dub_vol')  else 1.0
         PreviewWindow(
             self,
             video_path=self.video_path,
             entries=self.subtitle_entries,
             tts_settings=self._get_tts_settings(),
             dubbed_wav=self._preview_wav,
+            music_path=music_path,
+            orig_vol=orig_vol,
+            dub_vol=dub_vol,
+            music_vol=music_vol,
             on_save_cb=self._s2_refresh_table,
             initial_style=self._s3_style_var.get() if hasattr(self, "_s3_style_var") else DEFAULT_STYLE,
         )
@@ -1596,16 +1638,27 @@ class VideoTranslatorApp(ctk.CTk):
         if not self.video_path:
             messagebox.showwarning("Chưa có video", "Hãy chọn video ở Bước 1!")
             return
+        music_path = None
+        music_vol  = 0.08
+        if getattr(self, '_s3_music_enabled', None) and self._s3_music_enabled.get():
+            music_path = pick_random_music()
+            if hasattr(self, '_s3_music_vol'):
+                music_vol = self._s3_music_vol.get() / 100.0
+        orig_vol = self._s2_orig_vol.get() / 100.0 if hasattr(self, '_s2_orig_vol') else 0.10
+        dub_vol  = self._s2_dub_vol.get()  / 100.0 if hasattr(self, '_s2_dub_vol')  else 1.0
         win = PreviewWindow(
             self,
             video_path=self.video_path,
             entries=self.subtitle_entries,
             tts_settings=self._get_tts_settings(),
             dubbed_wav=self._preview_wav,
+            music_path=music_path,
+            orig_vol=orig_vol,
+            dub_vol=dub_vol,
+            music_vol=music_vol,
             on_save_cb=self._s2_refresh_table,
             initial_style=self._s3_style_var.get() if hasattr(self, "_s3_style_var") else DEFAULT_STYLE,
         )
-        # Auto-trigger dubbing generation after window opens
         win.after(500, win._generate_dub_preview)
 
     def _open_vlc_with_subs(self):
@@ -1661,6 +1714,19 @@ class VideoTranslatorApp(ctk.CTk):
         if not check_ffmpeg():
             messagebox.showwarning("Thiếu FFmpeg",
                 "FFmpeg chưa được cài!\n\nChạy: winget install ffmpeg")
+
+    def _open_local_batch(self):
+        """Mở cửa sổ Hàng Loạt từ Thư mục."""
+        from local_batch_window import LocalBatchWindow
+        settings = {
+            "font_size":  self._s3_font_size.get() if hasattr(self, "_s3_font_size") else 9,
+            "sub_style":  self._s3_style_var.get()  if hasattr(self, "_s3_style_var")  else "Mặc định",
+            "logo_path":  self._logo_path,
+            "logo_enabled": self._logo_enabled.get() if hasattr(self, "_logo_enabled") else False,
+            "logo_opacity": self._logo_opacity.get() / 100.0 if hasattr(self, "_logo_opacity") else 0.3,
+            "logo_size":    self._logo_size.get()    if hasattr(self, "_logo_size")    else 120,
+        }
+        LocalBatchWindow(self, settings)
 
     def _open_batch(self):
         """Open batch processing window with current app settings."""

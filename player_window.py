@@ -146,6 +146,11 @@ class PlayerWindow(ctk.CTkToplevel):
         video_path: str,
         entries: Optional[List["SubtitleEntry"]] = None,
         dubbed_wav: Optional[str] = None,
+        music_path: Optional[str] = None,
+        orig_vol: float = 0.10,
+        dub_vol: float = 1.0,
+        music_vol: float = 0.08,
+        tts_settings: Optional[dict] = None,
         blur_regions: Optional[List[BlurRegion]] = None,
         on_save: Optional[Callable[[List[BlurRegion]], None]] = None,
     ):
@@ -157,8 +162,15 @@ class PlayerWindow(ctk.CTkToplevel):
         self._video_path  = video_path
         self._entries     = entries or []
         self._dubbed_wav  = dubbed_wav
-        self._on_save     = on_save
+        self._music_path   = music_path
+        self._orig_vol     = orig_vol
+        self._dub_vol      = dub_vol
+        self._music_vol    = music_vol
+        self._tts_settings = tts_settings or {}
+        self._on_save      = on_save
         self._blur_regions: List[BlurRegion] = list(blur_regions or [])
+        self._temp_mix_wav: Optional[str] = None
+        self._audio_ready  = False
 
         # ── Video state ───────────────────────────────────────────────────────
         self._cap: Optional[cv2.VideoCapture] = None
@@ -319,15 +331,86 @@ class PlayerWindow(ctk.CTkToplevel):
         self._total_frames  = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self._duration_sec  = self._total_frames / self._fps
 
-        # Load dubbed audio
-        if _HAS_PYGAME and self._dubbed_wav and os.path.exists(self._dubbed_wav):
-            try:
-                pygame.mixer.music.load(self._dubbed_wav)
-            except Exception as e:
-                print(f"[Audio] Không thể tải audio: {e}")
-
-        # Show first frame
         self._seek_to_frame(0)
+
+        if _HAS_PYGAME:
+            need_tts = (self._dubbed_wav is None and
+                        bool(self._tts_settings) and
+                        bool(self._entries))
+            target = self._generate_then_prepare if need_tts else self._prepare_audio
+            threading.Thread(target=target, daemon=True).start()
+
+    def _generate_then_prepare(self):
+        """Tự động tạo lồng tiếng TTS rồi mix audio (chạy trong background thread)."""
+        self.after(0, lambda: self._mode_lbl.configure(
+            text="🎙  Đang tạo lồng tiếng... (có thể mất vài phút)"
+        ))
+        try:
+            from dubbing import create_dubbed_track
+            from video_processor import get_video_duration
+
+            provider = self._tts_settings.get("provider", "edge")
+            voice_id = self._tts_settings.get("voice_id", "vi-VN-NamMinhNeural")
+            api_key  = self._tts_settings.get("api_key", "")
+            dur_ms   = int(get_video_duration(self._video_path) * 1000) or 600_000
+
+            def _cb(msg, prog):
+                self.after(0, lambda m=msg: self._mode_lbl.configure(text=f"🎙  {m}"))
+
+            self._dubbed_wav = create_dubbed_track(
+                self._entries, dur_ms,
+                voice=voice_id, provider=provider, api_key=api_key,
+                progress_callback=_cb,
+            )
+        except Exception as exc:
+            self.after(0, lambda e=str(exc): self._mode_lbl.configure(
+                text=f"⚠️  TTS thất bại: {e[:60]}"
+            ))
+
+        self._prepare_audio()
+
+    def _prepare_audio(self):
+        """Background thread: FFmpeg-mix original + dubbed + music → load into pygame."""
+        self.after(0, lambda: self._mode_lbl.configure(
+            text="⏳  Đang chuẩn bị âm thanh hỗn hợp (original + lồng tiếng + nhạc)..."
+        ))
+        try:
+            from video_processor import build_preview_audio
+            mixed = build_preview_audio(
+                self._video_path,
+                dubbed_wav=self._dubbed_wav,
+                music_path=self._music_path,
+                orig_vol=self._orig_vol,
+                dub_vol=self._dub_vol,
+                music_vol=self._music_vol,
+            )
+            if mixed:
+                self._temp_mix_wav = mixed
+                pygame.mixer.music.load(mixed)
+                self._audio_ready = True
+                self.after(0, self._on_audio_ready)
+            else:
+                if self._dubbed_wav and os.path.exists(self._dubbed_wav):
+                    pygame.mixer.music.load(self._dubbed_wav)
+                    self._audio_ready = True
+                    self.after(0, self._on_audio_ready)
+                self.after(0, lambda: self._mode_lbl.configure(
+                    text="⚠️  Mix âm thanh thất bại — chỉ phát lồng tiếng"
+                ))
+        except Exception as exc:
+            self.after(0, lambda e=str(exc): self._mode_lbl.configure(
+                text=f"⚠️  Lỗi âm thanh: {e[:60]}"
+            ))
+
+    def _on_audio_ready(self):
+        """Gọi từ main thread khi audio đã load xong. Tự sync nếu video đang phát."""
+        self._mode_lbl.configure(text="")
+        if self._playing:
+            try:
+                pos_sec = self._cur_frame_idx / self._fps
+                pygame.mixer.music.play(start=pos_sec)
+            except Exception:
+                pass
 
     def _toggle_play(self):
         if self._playing:
@@ -341,8 +424,7 @@ class PlayerWindow(ctk.CTkToplevel):
         self._playing = True
         self._play_btn.configure(text="⏸  Dừng")
 
-        # Start audio
-        if _HAS_PYGAME and self._dubbed_wav and os.path.exists(self._dubbed_wav):
+        if _HAS_PYGAME and self._audio_ready:
             try:
                 pos_sec = self._cur_frame_idx / self._fps
                 pygame.mixer.music.play(start=pos_sec)
@@ -739,6 +821,11 @@ class PlayerWindow(ctk.CTkToplevel):
         if self._cap:
             self._cap.release()
             self._cap = None
+        if self._temp_mix_wav and os.path.exists(self._temp_mix_wav):
+            try:
+                os.remove(self._temp_mix_wav)
+            except OSError:
+                pass
         self.destroy()
 
     def _show_error(self, msg: str):

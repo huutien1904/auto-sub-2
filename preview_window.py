@@ -23,14 +23,6 @@ from subtitle_styles import STYLES, DEFAULT_STYLE, build_ffmpeg_style, get_canva
 if TYPE_CHECKING:
     from subtitle_utils import SubtitleEntry
 
-_VLC_EXE: Optional[str] = next(
-    (p for p in [
-        r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-        r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
-    ] if os.path.exists(p)),
-    None,
-)
-
 PREVIEW_W, PREVIEW_H = 480, 270   # canvas dimensions
 
 
@@ -63,6 +55,10 @@ class PreviewWindow(ctk.CTkToplevel):
         entries: "List[SubtitleEntry]",
         tts_settings: Optional[Dict] = None,
         dubbed_wav: Optional[str] = None,
+        music_path: Optional[str] = None,
+        orig_vol: float = 0.10,
+        dub_vol: float = 1.0,
+        music_vol: float = 0.08,
         on_save_cb: Optional[Callable] = None,
         initial_style: str = DEFAULT_STYLE,
         initial_pos: Tuple[float, float] = (0.5, 0.88),   # (x%, y%) of video
@@ -76,10 +72,14 @@ class PreviewWindow(ctk.CTkToplevel):
         self._entries       = entries
         self._tts_settings  = tts_settings or {}
         self._dubbed_wav    = dubbed_wav
+        self._music_path    = music_path
+        self._orig_vol      = orig_vol
+        self._dub_vol       = dub_vol
+        self._music_vol     = music_vol
         self._on_save_cb    = on_save_cb
         self._selected_idx  = -1
         self._generating    = False
-        self._temp_srt      = None
+        self._player_win    = None
 
         # Style & position state
         self._current_style = tk.StringVar(value=initial_style)
@@ -94,7 +94,6 @@ class PreviewWindow(ctk.CTkToplevel):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(200, self._load_frame)
-        self.after(400, self._auto_open_vlc)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -140,10 +139,10 @@ class PreviewWindow(ctk.CTkToplevel):
         act.grid(row=3, column=0, padx=10, pady=(0, 8), sticky="ew")
 
         ctk.CTkButton(
-            act, text="▶  Xem trong VLC",
+            act, text="▶  Xem trước video",
             font=ctk.CTkFont(size=12, weight="bold"), height=36,
             fg_color=("#00695C","#004D40"), hover_color=("#00796B","#00695C"),
-            command=self._refresh_vlc,
+            command=self._open_embedded_player,
         ).pack(side="left", padx=(0, 6))
 
         self._dub_btn = ctk.CTkButton(
@@ -516,58 +515,32 @@ class PreviewWindow(ctk.CTkToplevel):
     def _drag_end_cb(self, event):
         self._drag_start = None
 
-    # ── VLC / player ──────────────────────────────────────────────────────────
+    # ── Embedded player ────────────────────────────────────────────────────────
 
-    def _auto_open_vlc(self):
-        self._set_status("⏳", "Đang mở VLC...")
-        threading.Thread(target=self._do_open_vlc, daemon=True).start()
+    def _open_embedded_player(self):
+        from player_window import PlayerWindow
+        # Nếu player đang mở mà dubbed audio vừa được tạo mới → đóng mở lại
+        if self._player_win and self._player_win.winfo_exists():
+            if getattr(self._player_win, '_dubbed_wav', None) == self._dubbed_wav:
+                self._player_win.lift()
+                return
+            self._player_win.destroy()
+            self._player_win = None
 
-    def _refresh_vlc(self):
-        self._set_status("⏳", "Đang cập nhật phụ đề và mở VLC...")
-        threading.Thread(target=self._do_open_vlc, daemon=True).start()
-
-    def _do_open_vlc(self, dubbed_wav: Optional[str] = None):
-        try:
-            srt = tempfile.mktemp(suffix=".srt")
-            _write_srt(self._entries, srt)
-            self._temp_srt = srt
-            wav = dubbed_wav or self._dubbed_wav
-
-            if _VLC_EXE:
-                # Convert paths to native Windows format to avoid space issues
-                video  = os.path.normpath(self._video_path)
-                srt_p  = os.path.normpath(srt)
-                cmd = [
-                    _VLC_EXE,
-                    video,
-                    f"--sub-file={srt_p}",
-                    "--sub-text-scale=80",
-                    "--sub-text-position=90",
-                ]
-                if wav and os.path.exists(wav):
-                    cmd += [f"--input-slave={os.path.normpath(wav)}"]
-                subprocess.Popen(cmd)
-                extra = " + lồng tiếng" if wav else ""
-                self.after(0, lambda: self._set_status(
-                    "▶", f"VLC đang phát — phụ đề kiểu '{self._current_style.get()}'{extra}"
-                ))
-            else:
-                out = tempfile.mktemp(suffix=".mp4")
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", self._video_path, "-i", srt,
-                    "-map", "0:v", "-map", "0:a", "-map", "1:s",
-                    "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", out,
-                ]
-                r = subprocess.run(cmd, capture_output=True)
-                if r.returncode == 0:
-                    os.startfile(out)
-                else:
-                    os.startfile(self._video_path)
-                self.after(0, lambda: self._set_status("▶", "Đang phát trong trình phát mặc định."))
-        except Exception as exc:
-            err = str(exc)
-            self.after(0, lambda: self._set_status("❌", f"Lỗi: {err}"))
+        self._set_status("▶", "Đang mở trình xem trước tích hợp...")
+        self._player_win = PlayerWindow(
+            self,
+            video_path=self._video_path,
+            entries=self._entries,
+            dubbed_wav=self._dubbed_wav,
+            music_path=self._music_path,
+            orig_vol=self._orig_vol,
+            dub_vol=self._dub_vol,
+            music_vol=self._music_vol,
+        )
+        self.after(200, lambda: self._set_status(
+            "▶", f"Trình xem trước đã mở — phụ đề kiểu '{self._current_style.get()}'"
+        ))
 
     # ── Dubbing preview ───────────────────────────────────────────────────────
 
@@ -603,8 +576,8 @@ class PreviewWindow(ctk.CTkToplevel):
                 voice=voice_id, provider=provider, api_key=api_key,
                 progress_callback=_cb,
             )
-            self.after(0, lambda: self._set_status("🎙", "Lồng tiếng xong — đang mở VLC..."))
-            self._do_open_vlc(dubbed_wav=self._dubbed_wav)
+            self.after(0, lambda: self._set_status("🎙", "Lồng tiếng xong — đang mở xem trước..."))
+            self.after(200, self._open_embedded_player)
         except Exception as exc:
             err = str(exc)
             self.after(0, lambda: self._set_status("❌", f"Lỗi: {err}"))
@@ -637,9 +610,4 @@ class PreviewWindow(ctk.CTkToplevel):
         return (self._sub_x_pct, self._sub_y_pct)
 
     def _on_close(self):
-        if self._temp_srt and os.path.exists(self._temp_srt):
-            try:
-                os.remove(self._temp_srt)
-            except OSError:
-                pass
         self.destroy()
